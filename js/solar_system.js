@@ -2777,6 +2777,7 @@ const ORION_DIR = new THREE.Vector3(0.1048, -0.0188, 0.9943).normalize();
 
 const _constellationFocusDir = new THREE.Vector3();
 const _constellationFocusPos = new THREE.Vector3();
+const _constellationTargetDir = new THREE.Vector3();
 
 function getConstellationDirection(group) {
   const starAttr = starGeo.getAttribute('position');
@@ -2792,26 +2793,39 @@ function getConstellationDirection(group) {
   return _constellationFocusDir.normalize();
 }
 
-function focusConstellation(group, options = {}) {
+function aimCameraAtConstellation(group, options = {}) {
   const thetaOffset = options.thetaOffset ?? 0;
   const phiOffset = options.phiOffset ?? 0;
-  const skyDir = getConstellationDirection(group);
-  if (!skyDir) return;
+  const skyDir = getConstellationDirection(group) || ORION_DIR;
 
-  clearFocusSelection();
   constellationsOn = true;
   document.getElementById('const-btn').textContent = 'CONSTELLATIONS ON';
   constLineMesh.visible = true;
+
+  _constellationTargetDir.copy(skyDir);
   if (viewMode !== 'solar') {
     const inv = new THREE.Euler(-solarPivot.rotation.x, 0, 0);
-    skyDir.applyEuler(inv);
+    _constellationTargetDir.applyEuler(inv);
   }
-  camTheta  = Math.atan2(skyDir.x, skyDir.z) + thetaOffset + Math.PI;
-  camPhi    = Math.acos(Math.max(-1, Math.min(1, skyDir.y))) + phiOffset;
+
+  camTheta = Math.atan2(_constellationTargetDir.x, _constellationTargetDir.z) + thetaOffset + Math.PI;
+  camPhi = Math.acos(Math.max(-1, Math.min(1, _constellationTargetDir.y))) + phiOffset;
+  camPhi = THREE.MathUtils.clamp(camPhi, 1e-3, Math.PI * 2 - 1e-3);
   targetPhi = camPhi;
+  cameraRoll = 0;
   lookAtSun = false;
   btnLookAtSun.classList.remove('active');
+}
+
+function focusConstellationFromSearch(group, options = {}) {
+  setView('solar');
+  clearFocusSelection();
+  aimCameraAtConstellation(group, options);
   document.getElementById('btn-orion').classList.remove('active');
+}
+
+function focusConstellationFromButton(group, options = {}) {
+  aimCameraAtConstellation(group, options);
 }
 
 document.getElementById('btn-orion').addEventListener('click', () => {
@@ -2821,7 +2835,7 @@ document.getElementById('btn-orion').addEventListener('click', () => {
     closeMobilePanels();
     return;
   }
-  focusConstellation(
+  focusConstellationFromButton(
     { key:'Orion', indices:[0,1,2,3,4,5,6,7] },
     { thetaOffset: 0.25, phiOffset: -0.15 }
   );
@@ -3876,7 +3890,7 @@ animate();
         sub: `${group.indices.length} star${group.indices.length === 1 ? '' : 's'}`,
         color: '#b8d6ff',
         group: 'CONSTELLATIONS',
-        action: () => focusConstellation(group),
+        action: () => focusConstellationFromSearch(group),
       });
     }
 
