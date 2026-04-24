@@ -2856,6 +2856,8 @@ function setFocus(name) {
     showInfo('sun', null);
   } else if (name === null || name === '') {
     focusMesh = null;
+    focusedInfoType = null;
+    focusedInfoObj = null;
     infoPanelDismissed = false;
     syncInfoPanelVisibility();
   } else {
@@ -3118,6 +3120,47 @@ const infoHideBtn = document.getElementById('pi-hide-btn');
 const infoToggleBtn = document.getElementById('info-toggle-btn');
 const searchInputEl = document.getElementById('search-input');
 let infoPanelDismissed = false;
+let focusedInfoType = null;
+let focusedInfoObj = null;
+
+const KM_PER_AU = 149597870.7;
+const SECONDS_PER_YEAR = 365.25 * 86400;
+const KM_S_PER_AU_PER_YEAR = KM_PER_AU / SECONDS_PER_YEAR;
+const SUN_GALACTIC_SPEED_KMS = 230;
+
+function formatSpeedKmS(speedKmS) {
+  if (!Number.isFinite(speedKmS)) return '—';
+  if (speedKmS >= 100) return speedKmS.toFixed(0) + ' km/s';
+  if (speedKmS >= 10) return speedKmS.toFixed(1) + ' km/s';
+  return speedKmS.toFixed(2) + ' km/s';
+}
+
+function getHeliocentricSpeedKmS(semiMajorSceneUnits, radiusSceneUnits) {
+  if (!(semiMajorSceneUnits > 0) || !(radiusSceneUnits > 0)) return null;
+  const semiMajorAu = semiMajorSceneUnits / AU_SCENE;
+  const radiusAu = radiusSceneUnits / AU_SCENE;
+  const muSun = 4 * Math.PI * Math.PI;
+  const speedAuPerYear = Math.sqrt(Math.max(0, muSun * ((2 / radiusAu) - (1 / semiMajorAu))));
+  return speedAuPerYear * KM_S_PER_AU_PER_YEAR;
+}
+
+function getProbeInstantSpeedKmS(vd) {
+  const currentYear = 2000 + simTime;
+  const dtYears = 1 / 365.25;
+  const prevPos = getProbePos(vd, currentYear - dtYears);
+  const nextPos = getProbePos(vd, currentYear + dtYears);
+  const speedAuPerYear = prevPos.distanceTo(nextPos) / AU_SCENE / (2 * dtYears);
+  return speedAuPerYear * KM_S_PER_AU_PER_YEAR;
+}
+
+function getInfoVelocity(type, obj) {
+  if (type === 'sun') return formatSpeedKmS(SUN_GALACTIC_SPEED_KMS);
+  if (type === 'planet') return formatSpeedKmS(getHeliocentricSpeedKmS(obj.d.sma, obj.tiltGroup.position.length()));
+  if (type === 'dwarf') return formatSpeedKmS(getHeliocentricSpeedKmS(obj.d.sma, obj.mesh.position.length()));
+  if (type === 'comet') return formatSpeedKmS(getHeliocentricSpeedKmS(obj.cd.sma, obj.nucleus.position.length()));
+  if (type === 'probe') return formatSpeedKmS(getProbeInstantSpeedKmS(obj.vd));
+  return 'N/A';
+}
 
 function syncInfoPanelVisibility() {
   const hasFocus = !!focusMesh;
@@ -3131,43 +3174,49 @@ function syncInfoPanelVisibility() {
   }
 }
 
-function showInfo(type, obj) {
+function renderInfoContent(type, obj) {
   const set = (id, val) => { const el=document.getElementById(id); if(el) el.textContent=val??'—'; };
-  const lbl = (diam, dist, year, moons, type_) => {
+  const lbl = (diam, dist, year, moons, vel, type_) => {
     set('pi-lbl-diam', diam); set('pi-lbl-dist', dist);
-    set('pi-lbl-year', year); set('pi-lbl-moons', moons); set('pi-lbl-type', type_);
+    set('pi-lbl-year', year); set('pi-lbl-moons', moons); set('pi-lbl-vel', vel); set('pi-lbl-type', type_);
   };
   if (type==='sun') {
-    lbl('DIAMETER','DISTANCE','GALACTIC ORBIT','PLANETS','TYPE');
+    lbl('DIAMETER','DISTANCE','GALACTIC ORBIT','PLANETS','ORBITAL SPEED','TYPE');
     set('pi-name','THE SUN'); set('pi-diam','1,392,700 km'); set('pi-dist','—');
-    set('pi-year','225M yr'); set('pi-moons','8 planets'); set('pi-type','G-type Main Sequence');
+    set('pi-year','225M yr'); set('pi-moons','8 planets'); set('pi-vel',getInfoVelocity(type, obj)); set('pi-type','G-type Main Sequence');
   } else if (type==='planet') {
-    lbl('DIAMETER','FROM SUN','ORBITAL PERIOD','MOONS','TYPE');
+    lbl('DIAMETER','FROM SUN','ORBITAL PERIOD','MOONS','ORBITAL SPEED','TYPE');
     set('pi-name',obj.d.name); set('pi-diam',obj.d.diameter); set('pi-dist',obj.d.dist);
-    set('pi-year',obj.d.year); set('pi-moons',obj.d.moons); set('pi-type',obj.d.type);
+    set('pi-year',obj.d.year); set('pi-moons',obj.d.moons); set('pi-vel',getInfoVelocity(type, obj)); set('pi-type',obj.d.type);
   } else if (type==='moon') {
-    lbl('ORBITS','ORBITAL PERIOD','ECCENTRICITY','INCLINATION','TYPE');
+    lbl('ORBITS','ORBITAL PERIOD','ECCENTRICITY','INCLINATION','ORBITAL SPEED','TYPE');
     set('pi-name',obj.md.name); set('pi-diam',obj.md.planet);
     set('pi-dist',(obj.md.period*365.25).toFixed(2)+' days');
-    set('pi-year',obj.md.ecc.toFixed(3)); set('pi-moons',obj.md.inc.toFixed(1)+'°');
+    set('pi-year',obj.md.ecc.toFixed(3)); set('pi-moons',obj.md.inc.toFixed(1)+'°'); set('pi-vel',getInfoVelocity(type, obj));
     set('pi-type','Natural satellite');
   } else if (type==='dwarf') {
-    lbl('DIAMETER','FROM SUN','ORBITAL PERIOD','MOONS','TYPE');
+    lbl('DIAMETER','FROM SUN','ORBITAL PERIOD','MOONS','ORBITAL SPEED','TYPE');
     set('pi-name',obj.d.name); set('pi-diam',obj.d.diameter); set('pi-dist',obj.d.dist);
-    set('pi-year',obj.d.year); set('pi-moons',obj.d.moons); set('pi-type',obj.d.type);
+    set('pi-year',obj.d.year); set('pi-moons',obj.d.moons); set('pi-vel',getInfoVelocity(type, obj)); set('pi-type',obj.d.type);
   } else if (type==='comet') {
-    lbl('NUCLEUS SIZE','ECCENTRICITY','ORBITAL PERIOD','INCLINATION','TYPE');
+    lbl('NUCLEUS SIZE','ECCENTRICITY','ORBITAL PERIOD','INCLINATION','ORBITAL SPEED','TYPE');
     set('pi-name',obj.cd.name); set('pi-diam','~'+Math.round(obj.cd.r*10)+'km');
     set('pi-dist',obj.cd.ecc.toFixed(4));
     set('pi-year',obj.cd.period<1000?obj.cd.period.toFixed(1)+' yrs':(obj.cd.period/1000).toFixed(1)+'k yrs');
-    set('pi-moons',obj.cd.inc.toFixed(1)+'°'); set('pi-type','Comet');
+    set('pi-moons',obj.cd.inc.toFixed(1)+'°'); set('pi-vel',getInfoVelocity(type, obj)); set('pi-type','Comet');
   } else if (type==='probe') {
     const distAU = (getProbePos(obj.vd, 2000+simTime).length()/AU_SCENE).toFixed(1);
-    lbl('LAUNCHED','DISTANCE','SPEED','STATUS','TYPE');
+    lbl('LAUNCHED','DISTANCE','SPEED','STATUS','CURRENT SPEED','TYPE');
     set('pi-name',obj.vd.name); set('pi-diam',obj.vd.info.launch);
     set('pi-dist',distAU+' AU from Sun'); set('pi-year',obj.vd.info.speed);
-    set('pi-moons',obj.vd.info.status); set('pi-type',obj.vd.info.note);
+    set('pi-moons',obj.vd.info.status); set('pi-vel',getInfoVelocity(type, obj)); set('pi-type',obj.vd.info.note);
   }
+}
+
+function showInfo(type, obj) {
+  focusedInfoType = type;
+  focusedInfoObj = obj;
+  renderInfoContent(type, obj);
   infoPanelDismissed = false;
   syncInfoPanelVisibility();
 }
@@ -3175,6 +3224,8 @@ function showInfo(type, obj) {
 function clearFocusSelection() {
   if (!focusMesh && !infoPanel.classList.contains('show')) return;
   focusMesh = null;
+  focusedInfoType = null;
+  focusedInfoObj = null;
   targetR = VIEW_DEFAULTS[viewMode].r;
   userPanOffset.set(0,0,0);
   geoLock = false;
@@ -3704,6 +3755,9 @@ function animate(){
   }
   for (const c of comets) {
     c.orbitLine.visible = orbitsOn && (viewMode==='solar');
+  }
+  if (focusMesh && focusedInfoType) {
+    renderInfoContent(focusedInfoType, focusedInfoObj);
   }
   // Constellation lines only visible when zoomed out (not in solar view)
   constLineMesh.visible = constellationsOn; // respect toggle
