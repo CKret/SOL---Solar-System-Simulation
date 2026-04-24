@@ -570,6 +570,12 @@ body.intro-active #mobile-backdrop {
   justify-content:center;
   border-radius:6px;
 }
+body:not(.mobile-ui) #fullscreen-btn {
+  display:none;
+}
+body.mobile-ui #fullscreen-btn {
+  display:inline-flex;
+}
 #fullscreen-btn .fs-icon {
   position:relative;
   width:16px;
