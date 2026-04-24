@@ -3617,9 +3617,9 @@ function animate(){
     const zEcl = r*Math.sin(u)*si;
     p.tiltGroup.position.set(xEcl, zEcl, -yEcl); // planet position (tiltGroup moves, mesh stays at origin within)
     // Axial rotation around correctly tilted axis
-    p.mesh.rotation.y = -(simTime * 365.25 / p.d.rotPeriod) * Math.PI * 2;
+    p.mesh.rotation.y = (simTime * 365.25 / p.d.rotPeriod) * Math.PI * 2;
     if (p.cloudMesh) {
-      p.cloudMesh.rotation.y = -(simTime * 365.25 / (p.d.rotPeriod * 1.08)) * Math.PI * 2;
+      p.cloudMesh.rotation.y = (simTime * 365.25 / (p.d.rotPeriod * 1.08)) * Math.PI * 2;
       if (p.cloudMesh.userData.updateClouds && !paused) p.cloudMesh.userData.updateClouds(simTime, dt);
       if (p.cloudMesh.userData.cloudMeshB) {
         p.cloudMesh.userData.cloudMeshB.rotation.y = p.cloudMesh.rotation.y;
@@ -3662,7 +3662,7 @@ function animate(){
     const yED=rD*(sOD*Math.cos(uD)+cOD*Math.sin(uD)*ciD);
     const zED=rD*Math.sin(uD)*siD;
     p.mesh.position.set(xED, zED, -yED);
-    p.mesh.rotation.y = -(simTime * 365.25 / p.d.rotPeriod) * Math.PI * 2;
+    p.mesh.rotation.y = (simTime * 365.25 / p.d.rotPeriod) * Math.PI * 2;
     p.orbitLine.visible = orbitsOn && (viewMode==='solar');
     // Charon orbits Pluto
     if (p.charon) {
@@ -3688,7 +3688,7 @@ function animate(){
       m.moonMesh.rotateX(THREE.MathUtils.degToRad(m.spinModel.pitchDeg ?? 0));
       m.moonMesh.rotateZ(THREE.MathUtils.degToRad(m.spinModel.rollDeg ?? 0));
     } else if (m.spinModel.mode === 'period') {
-      m.moonMesh.rotation.set(0, -(simTime * 365.25 / m.spinModel.periodDays) * Math.PI * 2, 0);
+      m.moonMesh.rotation.set(0, (simTime * 365.25 / m.spinModel.periodDays) * Math.PI * 2, 0);
     } else if (m.spinModel.mode === 'chaotic') {
       const chaoticTurn = (simTime * 365.25 / m.spinModel.periodDays) * Math.PI * 2;
       const chaoticPhase = m.spinSeed * Math.PI * 2;
@@ -3785,7 +3785,7 @@ function animate(){
 
   sunMesh.scale.setScalar(1);
   // Sun sidereal rotation: 25.38 days at equator
-  sunMesh.rotation.y = -(simTime * 365.25 / 25.38) * Math.PI * 2;
+  sunMesh.rotation.y = (simTime * 365.25 / 25.38) * Math.PI * 2;
 
   // ── HUD ────────────────────────────────────────────────────────────────────
   const lyT = simTime*7.25;
