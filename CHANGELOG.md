@@ -11,6 +11,7 @@ This changelog is derived from the project's git commit messages and is listed n
 - `9f9dcb0` Added the realtime button.
 
 ### Fixed
+- `63631db` Fixed SL9 to impact Jupiter.
 - `5c284f6` Fixed comet naming.
 - `bb6c5c3` Fixed additional button layout issues in smaller resolutions.
 - `049f12a` Fixed Earth's meridian alignment and the Moon phase.
