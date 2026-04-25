@@ -24,10 +24,107 @@ const PD = [
   { name:'EARTH',   sma:32,    ecc:0.017, inc:0.000, period:1.000017, L0:100.464, omega:102.937, Omega:  0.000, r:0.80, color:0x3377BB, emissive:0x00090f, tc:0x1155aa, diameter:'12,742 km',  dist:'149.6M km', year:'365 days',   moons:'1',  type:'Terrestrial', rotPeriod:0.9973  },
   { name:'MARS',    sma:48.8,  ecc:0.093, inc:1.850, period:1.880848, L0:355.433, omega:336.060, Omega: 49.558, r:0.44, color:0xC1440E, emissive:0x180300, tc:0x882200, diameter:'6,779 km',   dist:'228M km',   year:'687 days',   moons:'2',  type:'Terrestrial', rotPeriod:1.026   },
   { name:'JUPITER', sma:166.5, ecc:0.049, inc:1.303, period:11.86262, L0: 34.396, omega: 14.331, Omega:100.464, r:2.80, color:0xC99040, emissive:0x130900, tc:0x886020, diameter:'139,820 km', dist:'778M km',   year:'11.9 yrs',   moons:'95', type:'Gas Giant',   rotPeriod:0.41354 },
-  { name:'SATURN',  sma:305.2, ecc:0.057, inc:2.489, period:29.45701, L0: 50.077, omega: 93.057, Omega:113.665, r:2.35, color:0xE4D191, emissive:0x120f00, tc:0xb0a060, diameter:'116,460 km', dist:'1.43B km',  year:'29.5 yrs',   moons:'146',type:'Gas Giant',   rotPeriod:0.44401, rings:true, ri:1.35, ro:2.35, rc:0xC2A06B, rOp:0.75 },
+  { name:'SATURN',  sma:305.2, ecc:0.057, inc:2.489, period:29.45701, L0: 50.077, omega: 93.057, Omega:113.665, r:2.35, color:0xE4D191, emissive:0x120f00, tc:0xb0a060, diameter:'116,460 km', dist:'1.43B km',  year:'29.5 yrs',   moons:'146',type:'Gas Giant',   rotPeriod:0.44401, rings:true, ri:1.35, ro:2.35, rc:0xC2A06B, rOp:0.75, longitudeBiasDeg:-0.0195 },
   { name:'URANUS',  sma:614.1, ecc:0.047, inc:0.773, period:84.01685, L0:314.055, omega:173.005, Omega: 74.006, r:1.55, color:0x7DCCCC, emissive:0x001313, tc:0x3d8888, diameter:'50,724 km',  dist:'2.87B km',  year:'84 yrs',     moons:'28', type:'Ice Giant',   rotPeriod:-0.71833,rings:true, ri:1.64, ro:2.00, rc:0x5daaaa, rOp:0.55, tiltRings:true },
   { name:'NEPTUNE', sma:962.2, ecc:0.009, inc:1.770, period:164.7913, L0:304.349, omega: 48.124, Omega:131.784, r:1.50, color:0x4466FF, emissive:0x000820, tc:0x2233cc, diameter:'49,244 km',  dist:'4.50B km',  year:'165 yrs',    moons:'16', type:'Ice Giant',   rotPeriod:0.67125 },
 ];
+
+const PLANET_SECULAR_ELEMENTS = Object.freeze({
+  MERCURY: { a0:0.38709927, a1: 0.00000037, e0:0.20563593, e1: 0.00001906, I0:7.00497902, I1:-0.00594749, L0:252.25032350, L1:149472.67411175, p0: 77.45779628, p1: 0.16047689, O0: 48.33076593, O1:-0.12534081 },
+  VENUS:   { a0:0.72333566, a1: 0.00000390, e0:0.00677672, e1:-0.00004107, I0:3.39467605, I1:-0.00078890, L0:181.97909950, L1: 58517.81538729, p0:131.60246718, p1: 0.00268329, O0: 76.67984255, O1:-0.27769418 },
+  EARTH:   { a0:1.00000261, a1: 0.00000562, e0:0.01671123, e1:-0.00004392, I0:-0.00001531,I1:-0.01294668, L0:100.46457166, L1: 35999.37244981, p0:102.93768193, p1: 0.32327364, O0:  0.00000000, O1: 0.00000000 },
+  MARS:    { a0:1.52371034, a1: 0.00001847, e0:0.09339410, e1: 0.00007882, I0:1.84969142, I1:-0.00813131, L0: -4.55343205, L1: 19140.30268499, p0:-23.94362959, p1: 0.44441088, O0: 49.55953891, O1:-0.29257343 },
+  JUPITER: { a0:5.20288700, a1:-0.00011607, e0:0.04838624, e1:-0.00013253, I0:1.30439695, I1:-0.00183714, L0: 34.39644051, L1:  3034.74612775, p0: 14.72847983, p1: 0.21252668, O0:100.47390909, O1: 0.20469106 },
+  SATURN:  { a0:9.53667594, a1:-0.00125060, e0:0.05386179, e1:-0.00050991, I0:2.48599187, I1: 0.00193609, L0: 49.95424423, L1:  1222.49362201, p0: 92.59887831, p1:-0.41897216, O0:113.66242448, O1:-0.28867794 },
+  URANUS:  { a0:19.18916464,a1:-0.00196176, e0:0.04725744, e1:-0.00004397, I0:0.77263783, I1:-0.00242939, L0:313.23810451, L1:   428.48202785, p0:170.95427630, p1: 0.40805281, O0: 74.01692503, O1: 0.04240589 },
+  NEPTUNE: { a0:30.06992276,a1: 0.00026291, e0:0.00859048, e1: 0.00005105, I0:1.77004347, I1: 0.00035372, L0:-55.12002969, L1:   218.45945325, p0: 44.96476227, p1:-0.32241464, O0:131.78422574, O1:-0.00508664 },
+});
+
+const AU_KM = 149597870.7;
+const EARTH_ORBIT_SCENE_RADIUS = PD.find(d => d.name === 'EARTH').sma;
+const SUN_DIAMETER_KM = 1392700;
+
+function parseDiameterKm(text) {
+  if (!text) return null;
+  const match = String(text).match(/[\d,.]+/);
+  if (!match) return null;
+  const value = parseFloat(match[0].replace(/,/g, ''));
+  return Number.isFinite(value) ? value : null;
+}
+
+function getSceneRadiusFromDiameterKm(diameterKm) {
+  return EARTH_ORBIT_SCENE_RADIUS * ((diameterKm * 0.5) / AU_KM);
+}
+
+function getSceneDistanceFromKm(distanceKm) {
+  return EARTH_ORBIT_SCENE_RADIUS * (distanceKm / AU_KM);
+}
+
+function getRealSizeScale(authoredRadius, diameterText, fallbackDiameterKm) {
+  const diameterKm = fallbackDiameterKm ?? parseDiameterKm(diameterText);
+  if (!Number.isFinite(authoredRadius) || authoredRadius <= 0 || !Number.isFinite(diameterKm) || diameterKm <= 0) return 1;
+  return getSceneRadiusFromDiameterKm(diameterKm) / authoredRadius;
+}
+
+function formatDiameterKm(diameterKm) {
+  if (!Number.isFinite(diameterKm) || diameterKm <= 0) return '—';
+  const rounded = diameterKm >= 100 ? Math.round(diameterKm) : Math.round(diameterKm * 10) / 10;
+  return `${rounded.toLocaleString('en-US')} km`;
+}
+
+function normalizeDegrees(deg) {
+  deg %= 360;
+  if (deg < 0) deg += 360;
+  return deg;
+}
+
+function getPlanetOrbitState(planetLike, timeYears) {
+  const d = planetLike.d || planetLike;
+  const eph = PLANET_SECULAR_ELEMENTS[d.name];
+  if (!eph) {
+    return {
+      sma: d.sma,
+      ecc: d.ecc,
+      incRad: (d.inc || 0) * Math.PI / 180,
+      OmegaRad: (d.Omega || 0) * Math.PI / 180,
+      longPeriRad: d.omega * Math.PI / 180,
+      meanAnomaly: (2 * Math.PI * timeYears / d.period) + ((d.L0 - d.omega) * Math.PI / 180),
+    };
+  }
+
+  const T = timeYears / 100;
+  const sma = (eph.a0 + eph.a1 * T) * EARTH_ORBIT_SCENE_RADIUS;
+  const ecc = eph.e0 + eph.e1 * T;
+  const incRad = THREE.MathUtils.degToRad(eph.I0 + eph.I1 * T);
+  const OmegaRad = THREE.MathUtils.degToRad(normalizeDegrees(eph.O0 + eph.O1 * T));
+  const longPeriRad = THREE.MathUtils.degToRad(normalizeDegrees(eph.p0 + eph.p1 * T));
+  const meanLongitudeRad = THREE.MathUtils.degToRad(normalizeDegrees(eph.L0 + eph.L1 * T + (d.longitudeBiasDeg || 0)));
+  return {
+    sma,
+    ecc,
+    incRad,
+    OmegaRad,
+    longPeriRad,
+    meanAnomaly: meanLongitudeRad - longPeriRad,
+  };
+}
+
+function getPlanetScenePositionAtTime(planetLike, timeYears, out = new THREE.Vector3()) {
+  const state = getPlanetOrbitState(planetLike, timeYears);
+  const E = keplerE(state.meanAnomaly, state.ecc);
+  const nu = 2 * Math.atan2(
+    Math.sqrt(1 + state.ecc) * Math.sin(E / 2),
+    Math.sqrt(1 - state.ecc) * Math.cos(E / 2)
+  );
+  const r = state.sma * (1 - state.ecc * Math.cos(E));
+  const u = (state.longPeriRad - state.OmegaRad) + nu;
+  const cO = Math.cos(state.OmegaRad), sO = Math.sin(state.OmegaRad);
+  const ci = Math.cos(state.incRad), si = Math.sin(state.incRad);
+  const xEcl = r * (cO * Math.cos(u) - sO * Math.sin(u) * ci);
+  const yEcl = r * (sO * Math.cos(u) + cO * Math.sin(u) * ci);
+  const zEcl = r * Math.sin(u) * si;
+  return out.set(xEcl, zEcl, -yEcl);
+}
 
 // ── Kepler solver ─────────────────────────────────────────────────────────────
 function keplerE(M, ecc) {
@@ -1663,6 +1760,7 @@ self.onmessage=function(e){
   const planet = {
     d, incGrp, tiltGroup, mesh, cloudMesh, orbitLine, trailLine, trailGeo, trailPosBuf, trailColBuf, trailSizBuf, trailWorldPts,
     tc, ring: ringRef,
+    realSizeScale: getRealSizeScale(d.r, d.diameter),
     b, c,
     angle0: (d.L0 - d.omega) * Math.PI / 180,  // M0 = L0 - omega (mean anomaly at J2000)
     omegaRad: d.omega * Math.PI / 180,           // longitude of perihelion
@@ -1764,6 +1862,173 @@ const MOON_DATA = [
   { planet:'NEPTUNE', name:'Neso',      sma:200., period:9.3740,  ecc:0.571, inc:136., r:0.03, color:0x554433 },
 ];
 
+const MOON_DIAMETER_KM = {
+  Moon: 3474.8,
+  Phobos: 22.5,
+  Deimos: 12.4,
+  Io: 3643.2,
+  Europa: 3121.6,
+  Ganymede: 5268.2,
+  Callisto: 4820.6,
+  Amalthea: 167,
+  Thebe: 98,
+  Metis: 43,
+  Adrastea: 16.4,
+  Himalia: 140,
+  Elara: 80,
+  Pasiphae: 58,
+  Sinope: 38,
+  Lysithea: 42,
+  Carme: 46,
+  Ananke: 29,
+  Leda: 20,
+  Mimas: 396.4,
+  Enceladus: 504.2,
+  Tethys: 1062,
+  Dione: 1123,
+  Rhea: 1527.6,
+  Titan: 5149.5,
+  Hyperion: 270,
+  Iapetus: 1469,
+  Phoebe: 213,
+  Janus: 179,
+  Epimetheus: 116,
+  Helene: 36,
+  Telesto: 24,
+  Calypso: 21,
+  Pan: 28,
+  Atlas: 30,
+  Prometheus: 86,
+  Pandora: 80,
+  Daphnis: 8,
+  Miranda: 471.6,
+  Ariel: 1157.8,
+  Umbriel: 1169.4,
+  Titania: 1577.8,
+  Oberon: 1522.8,
+  Caliban: 72,
+  Sycorax: 150,
+  Prospero: 50,
+  Setebos: 48,
+  Puck: 162,
+  Portia: 135,
+  Rosalind: 72,
+  Belinda: 90,
+  Cressida: 80,
+  Triton: 2706.8,
+  Nereid: 340,
+  Proteus: 420,
+  Larissa: 194,
+  Galatea: 176,
+  Despina: 150,
+  Thalassa: 82,
+  Naiad: 60,
+  Halimede: 62,
+  Sao: 44,
+  Laomedeia: 42,
+  Neso: 60,
+  Charon: 1212,
+};
+
+const MOON_SMA_KM = {
+  Moon: 384400,
+  Phobos: 9376,
+  Deimos: 23463,
+  Io: 421700,
+  Europa: 671100,
+  Ganymede: 1070400,
+  Callisto: 1882700,
+  Amalthea: 181400,
+  Thebe: 221900,
+  Metis: 128000,
+  Adrastea: 129000,
+  Himalia: 11461000,
+  Elara: 11741000,
+  Pasiphae: 23609000,
+  Sinope: 23940000,
+  Lysithea: 11720000,
+  Carme: 23404000,
+  Ananke: 21276000,
+  Leda: 11165000,
+  Mimas: 185540,
+  Enceladus: 238020,
+  Tethys: 294670,
+  Dione: 377400,
+  Rhea: 527070,
+  Titan: 1221870,
+  Hyperion: 1481100,
+  Iapetus: 3561300,
+  Phoebe: 12952000,
+  Janus: 151460,
+  Epimetheus: 151410,
+  Helene: 377420,
+  Telesto: 294670,
+  Calypso: 294670,
+  Pan: 133584,
+  Atlas: 137670,
+  Prometheus: 139380,
+  Pandora: 141720,
+  Daphnis: 136500,
+  Miranda: 129390,
+  Ariel: 191020,
+  Umbriel: 266300,
+  Titania: 435910,
+  Oberon: 583520,
+  Caliban: 7230000,
+  Sycorax: 12179000,
+  Prospero: 16645000,
+  Setebos: 17418000,
+  Puck: 86010,
+  Portia: 66097,
+  Rosalind: 69940,
+  Belinda: 75255,
+  Cressida: 61767,
+  Triton: 354760,
+  Nereid: 5513400,
+  Proteus: 117647,
+  Larissa: 73548,
+  Galatea: 61953,
+  Despina: 52526,
+  Thalassa: 50074,
+  Naiad: 48227,
+  Halimede: 16571000,
+  Sao: 22422000,
+  Laomedeia: 23571000,
+  Neso: 48227000,
+  Charon: 19571,
+};
+
+function getEllipseAxes(sma, ecc) {
+  const safeSma = Number.isFinite(sma) ? sma : 0;
+  const safeEcc = Number.isFinite(ecc) ? ecc : 0;
+  return {
+    sma: safeSma,
+    b: safeSma * Math.sqrt(1 - safeEcc * safeEcc),
+    c: safeSma * safeEcc,
+  };
+}
+
+function createMoonOrbitPoints(sma, ecc) {
+  const { b, c } = getEllipseAxes(sma, ecc);
+  const points = [];
+  for (let i=0;i<=128;i++) {
+    const t=(i/128)*Math.PI*2;
+    points.push(new THREE.Vector3(sma*Math.cos(t)-c, 0, -b*Math.sin(t)));
+  }
+  return points;
+}
+
+function setMoonOrbitScale(moon, useRealScale) {
+  const sma = useRealScale ? moon.realOrbitSma : moon.visualOrbitSma;
+  const { b, c } = getEllipseAxes(sma, moon.md.ecc);
+  moon.orbitSma = sma;
+  moon.b = b;
+  moon.c = c;
+  const nextGeo = new THREE.BufferGeometry().setFromPoints(createMoonOrbitPoints(sma, moon.md.ecc));
+  moon.moonOrbitLine.geometry.dispose();
+  moon.moonOrbitLine.geometry = nextGeo;
+}
+
 const IRREGULAR_MOON_NAMES = new Set([
   'Himalia', 'Elara', 'Pasiphae', 'Sinope', 'Lysithea', 'Carme', 'Ananke', 'Leda',
   'Phoebe', 'Hyperion',
@@ -1824,9 +2089,10 @@ const moons = [];
 for (const md of MOON_DATA) {
   const parentPlanet = planets.find(p => p.d.name === md.planet);
   if (!parentPlanet) continue;
-
-  const b = md.sma * Math.sqrt(1 - md.ecc*md.ecc);
-  const c = md.sma * md.ecc;
+  const diameterKm = MOON_DIAMETER_KM[md.name] ?? null;
+  const realOrbitSmaKm = MOON_SMA_KM[md.name] ?? null;
+  const realOrbitSma = Number.isFinite(realOrbitSmaKm) ? getSceneDistanceFromKm(realOrbitSmaKm) : md.sma;
+  const { b, c } = getEllipseAxes(md.sma, md.ecc);
 
   // Moon lives in an inclined group parented to the planet's incGrp (not mesh)
   // so the planet's axial rotation doesn't carry the moon around with it
@@ -1835,13 +2101,8 @@ for (const md of MOON_DATA) {
   parentPlanet.incGrp.add(moonIncGrp);
 
   // Orbit ring (visible in solar mode when zoomed in)
-  const oPts = [];
-  for (let i=0;i<=128;i++){
-    const t=(i/128)*Math.PI*2;
-    oPts.push(new THREE.Vector3(md.sma*Math.cos(t)-c, 0, -b*Math.sin(t)));
-  }
   const moonOrbitLine = new THREE.Line(
-    new THREE.BufferGeometry().setFromPoints(oPts),
+    new THREE.BufferGeometry().setFromPoints(createMoonOrbitPoints(md.sma, md.ecc)),
     new THREE.LineBasicMaterial({ color:0x334455, transparent:true, opacity:0.35 })
   );
   moonIncGrp.add(moonOrbitLine);
@@ -1866,9 +2127,14 @@ for (const md of MOON_DATA) {
   );
 
   moons.push({
-    md, moonMesh, moonIncGrp, moonOrbitLine,
+    md: diameterKm ? { ...md, diameter: formatDiameterKm(diameterKm) } : md,
+    moonMesh, moonIncGrp, moonOrbitLine,
     parentPlanet,
+    visualOrbitSma: md.sma,
+    realOrbitSma,
+    orbitSma: md.sma,
     b, c,
+    realSizeScale: getRealSizeScale(md.r, null, diameterKm),
     angle0: THREE.MathUtils.degToRad(md.phaseDeg ?? 0),
     spinModel,
     spinSeed,
@@ -1927,7 +2193,7 @@ for (const d of DWARF_DATA) {
   );
   incGrp.add(mesh);
 
-  dwarfs.push({ d, incGrp, mesh, orbitLine, b, c, angle0: ((d.L0-(d.omega||0)) * Math.PI / 180) });
+  dwarfs.push({ d, incGrp, mesh, orbitLine, b, c, realSizeScale: getRealSizeScale(d.r, d.diameter), angle0: ((d.L0-(d.omega||0)) * Math.PI / 180) });
 }
 
 // Pluto's moon Charon
@@ -1942,6 +2208,11 @@ for (const d of DWARF_DATA) {
     );
     charonGrp.add(charon);
     pluto.charon = charon;
+    pluto.charonGrp = charonGrp;
+    pluto.visualCharonOrbitRadius = 0.6;
+    pluto.realCharonOrbitRadius = getSceneDistanceFromKm(MOON_SMA_KM.Charon);
+    pluto.charonOrbitRadius = pluto.visualCharonOrbitRadius;
+    pluto.charonRealSizeScale = getRealSizeScale(0.10, null, MOON_DIAMETER_KM.Charon);
     pluto.charonAngle = Math.random()*Math.PI*2;
   }
 }
@@ -2163,11 +2434,25 @@ const COMET_DATA = [
   { name:"Ikeya-Seki",  sma:2912,  ecc:0.9999,inc:141.9, period:880,    r:0.09, color:0xFFEEBB },
 ];
 
+const COMET_NUCLEUS_DIAMETER_KM = {
+  "Halley's": 11,
+  'Hale-Bopp': 60,
+  Hyakutake: 4,
+  Encke: 4.8,
+  '67P/C-G': 4.3,
+  'Tempel 1': 7.6,
+  'Wild 2': 5.5,
+  'Shoemaker-L9': 2,
+  NEOWISE: 5,
+  'Ikeya-Seki': 5.4,
+};
+
 // Tail geometry: series of points streaming away from Sun
 const TAIL_PTS = 120;
 
 const comets = [];
 for (const cd of COMET_DATA) {
+  const diameterKm = COMET_NUCLEUS_DIAMETER_KM[cd.name] ?? null;
   const visualOrbit = getVisualCometOrbit(cd);
   const b = visualOrbit.b;
   const c = visualOrbit.c;
@@ -2243,9 +2528,11 @@ for (const cd of COMET_DATA) {
   scene.add(ionTail);
 
   comets.push({
-    cd, incGrp, nucleus, orbitLine,
+    cd: diameterKm ? { ...cd, diameter: formatDiameterKm(diameterKm) } : cd,
+    incGrp, nucleus, orbitLine,
     dustTail, dustGeo, dustPos, dustCol, dustSiz,
     ionTail,  ionGeo,  ionPos,  ionCol,  ionSiz,
+    realSizeScale: getRealSizeScale(cd.r, null, diameterKm),
     b, c, orbitEcc: visualOrbit.ecc,
     angle0: Math.random() * Math.PI * 2,
     tailDir: new THREE.Vector3(1, 0, 0), // smoothed tail direction
@@ -2383,10 +2670,48 @@ function makeSpacecraftMesh(color) {
   return grp;
 }
 
+const PROBE_VISUAL_RADIUS = 1.4;
+const PROBE_SYMBOLIC_FOCUS_RADIUS = PROBE_VISUAL_RADIUS;
+const PROBE_REAL_SIZE_SNAP_RADIUS = 0.24;
+const PROBE_FOCUS_RADIUS = 0.001;
+const PROBE_DIAMETER_KM = 0.004;
+const PROBE_BASE_SCALE = 2.5;
+const PROBE_GLOW_SIZE = 3.0;
+const PROBE_REAL_GLOW_SIZE = 0.35;
+const PROBE_REAL_DOT_SIZE_SCALE = 0.2;
+
+function makeProbeFocusReticle(color) {
+  const pts = [
+    -1.0,  1.0, 0,  -0.35,  1.0, 0,
+    -1.0,  1.0, 0,  -1.0,   0.35, 0,
+     1.0,  1.0, 0,   0.35,  1.0, 0,
+     1.0,  1.0, 0,   1.0,   0.35, 0,
+    -1.0, -1.0, 0,  -0.35, -1.0, 0,
+    -1.0, -1.0, 0,  -1.0,  -0.35, 0,
+     1.0, -1.0, 0,   0.35, -1.0, 0,
+     1.0, -1.0, 0,   1.0,  -0.35, 0,
+  ];
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  const reticle = new THREE.LineSegments(
+    geo,
+    new THREE.LineBasicMaterial({ color, transparent:true, opacity:0.95, depthWrite:false })
+  );
+  reticle.visible = false;
+  reticle.renderOrder = 10;
+  scene.add(reticle);
+  return reticle;
+}
+
 const probes = [];
 for (const vd of VOYAGER_DATA) {
   const mesh = makeSpacecraftMesh(vd.color);
-  mesh.scale.setScalar(2.5);
+  mesh.scale.setScalar(PROBE_BASE_SCALE);
+  const hitTarget = new THREE.Mesh(
+    new THREE.SphereGeometry(PROBE_VISUAL_RADIUS, 8, 8),
+    new THREE.MeshBasicMaterial({ transparent:true, opacity:0, depthWrite:false })
+  );
+  mesh.add(hitTarget);
   solarPivot.add(mesh);
 
   // Trail: Line geometry using trajectory array directly → smooth curves at flybys.
@@ -2421,7 +2746,7 @@ for (const vd of VOYAGER_DATA) {
   const glowGeo = new THREE.BufferGeometry();
   const glowPos = new Float32Array(3);
   const glowCol = new Float32Array([1, 1, 1]);
-  const glowSiz = new Float32Array([3.0]);
+  const glowSiz = new Float32Array([PROBE_GLOW_SIZE]);
   glowGeo.setAttribute('position', new THREE.BufferAttribute(glowPos, 3));
   glowGeo.setAttribute('color',    new THREE.BufferAttribute(glowCol, 3));
   glowGeo.setAttribute('size',     new THREE.BufferAttribute(glowSiz, 1));
@@ -2429,10 +2754,19 @@ for (const vd of VOYAGER_DATA) {
   glowPt.frustumCulled = false;
   scene.add(glowPt);
 
+  const focusReticle = makeProbeFocusReticle(vd.color);
+
   probes.push({
     vd, mesh, trailGeo, trailPos, trailCol, trailLine,
     dotGeo, dotPos, dotCol, dotSiz, dotLine,
-    glowGeo, glowPos, glowPt, PROBE_TRAIL_PTS,
+    glowGeo, glowPos, glowPt, glowSiz, focusReticle, PROBE_TRAIL_PTS,
+    hitTarget,
+    visualRadius: PROBE_VISUAL_RADIUS,
+    symbolicFocusRadius: PROBE_SYMBOLIC_FOCUS_RADIUS,
+    realSizeSnapRadius: PROBE_REAL_SIZE_SNAP_RADIUS,
+    focusRadius: PROBE_FOCUS_RADIUS,
+    baseScale: PROBE_BASE_SCALE,
+    realSizeScale: getSceneRadiusFromDiameterKm(PROBE_DIAMETER_KM) / PROBE_VISUAL_RADIUS,
   });
 }
 
@@ -2440,13 +2774,15 @@ function updateProbes() {
   for (const pr of probes) {
     const vd = pr.vd;
     const currentYear = 2000 + simTime;
+    const probeFocused = focusMesh === pr.mesh;
 
     // Only show after launch
     const launched = currentYear >= vd.launchYear;
     pr.mesh.visible = launched && (viewMode === 'solar');
-    pr.glowPt.visible = launched && (viewMode === 'solar');
+    pr.glowPt.visible = launched && (viewMode === 'solar') && !realSizeMode;
     pr.trailLine.visible = launched && (viewMode === 'solar') && orbitsOn;
-    pr.dotLine.visible   = launched && (viewMode === 'solar') && orbitsOn;
+    pr.dotLine.visible   = launched && (viewMode === 'solar') && orbitsOn && !realSizeMode;
+    pr.focusReticle.visible = launched && (viewMode === 'solar') && realSizeMode && probeFocused;
 
     if (!launched) continue;
 
@@ -2460,12 +2796,21 @@ function updateProbes() {
     pr.mesh.lookAt(pos.clone().add(dir));
 
     // Scale mesh
-    const scale = Math.max(2, Math.min(20, camR * 0.02));
+    const scale = realSizeMode ? pr.realSizeScale : Math.max(2, Math.min(20, camR * 0.02));
     pr.mesh.scale.setScalar(scale);
+    if (pr.hitTarget) pr.hitTarget.scale.setScalar(1 / Math.max(scale, 1e-12));
 
     // Glow point
     pr.glowPos[0] = pos.x; pr.glowPos[1] = pos.y; pr.glowPos[2] = pos.z;
     pr.glowGeo.attributes.position.needsUpdate = true;
+    pr.glowSiz[0] = realSizeMode ? PROBE_REAL_GLOW_SIZE : PROBE_GLOW_SIZE;
+    pr.glowGeo.attributes.size.needsUpdate = true;
+    if (pr.focusReticle.visible) {
+      pr.focusReticle.position.copy(pos);
+      const reticleScale = THREE.MathUtils.clamp(camR * 0.7, 0.003, 0.05);
+      pr.focusReticle.scale.setScalar(reticleScale);
+      pr.focusReticle.quaternion.copy(camera.quaternion);
+    }
 
     // Trail — render directly from trajectory array for accurate flyby curves.
     const traj = vd.trajectory;
@@ -2495,13 +2840,13 @@ function updateProbes() {
       pr.trailCol[n*3+2] = cb * fade;
       // Dots: only on daily-spaced points (not hourly) to avoid blob at flybys
       if (!isHourly && n % DOT_STRIDE === 0) {
-        pr.dotPos[nd*3]   = traj[i][1];
-        pr.dotPos[nd*3+1] = traj[i][2];
-        pr.dotPos[nd*3+2] = traj[i][3];
+        pr.dotPos[nd*3]   = Number.isFinite(traj[i][1]) ? traj[i][1] : 0;
+        pr.dotPos[nd*3+1] = Number.isFinite(traj[i][2]) ? traj[i][2] : 0;
+        pr.dotPos[nd*3+2] = Number.isFinite(traj[i][3]) ? traj[i][3] : 0;
         pr.dotCol[nd*3]   = cr * fade;
         pr.dotCol[nd*3+1] = cg * fade;
         pr.dotCol[nd*3+2] = cb * fade;
-        pr.dotSiz[nd] = 0.4 + f * 0.8;
+        pr.dotSiz[nd] = (0.4 + f * 0.8) * (realSizeMode ? PROBE_REAL_DOT_SIZE_SCALE : 1);
         nd++;
       }
       n++;
@@ -2604,8 +2949,11 @@ let targetR   = VIEW_DEFAULTS.solar.r;
 const spdEl  = document.getElementById('spd');
 const spdVal_el = document.getElementById('spd-val');
 const realtimeBtn = document.getElementById('realtime-btn');
+const realSizeBtn = document.getElementById('real-size-btn');
 const REALTIME_SIM_SPEED = 1 / (365.25 * 24 * 3600);
+const SUN_REAL_SIZE_SCALE = getRealSizeScale(4.5, null, SUN_DIAMETER_KM);
 let realtimeMode = false;
+let realSizeMode = false;
 
 function syncRealtimeUi() {
   if (!realtimeBtn) return;
@@ -2613,6 +2961,26 @@ function syncRealtimeUi() {
   realtimeBtn.textContent = realtimeMode ? 'REALTIME ON' : 'REALTIME';
   realtimeBtn.setAttribute('aria-pressed', realtimeMode ? 'true' : 'false');
   spdEl.disabled = realtimeMode;
+}
+
+function syncRealSizeUi() {
+  if (!realSizeBtn) return;
+  realSizeBtn.classList.toggle('active', realSizeMode);
+  realSizeBtn.textContent = realSizeMode ? 'REAL SIZE ON' : 'REAL SIZE';
+  realSizeBtn.setAttribute('aria-pressed', realSizeMode ? 'true' : 'false');
+}
+
+function getRenderedRadius(mesh, fallbackRadius=1) {
+  if (!mesh) return fallbackRadius;
+  const baseRadius = mesh.geometry?.parameters?.radius ?? fallbackRadius;
+  const sx = Math.abs(mesh.scale?.x ?? 1);
+  const sy = Math.abs(mesh.scale?.y ?? 1);
+  const sz = Math.abs(mesh.scale?.z ?? 1);
+  return baseRadius * Math.max(sx, sy, sz);
+}
+
+function getRenderedDiameter(mesh, fallbackRadius=1) {
+  return getRenderedRadius(mesh, fallbackRadius) * 2;
 }
 
 function getSimSpeed(){
@@ -2646,6 +3014,61 @@ realtimeBtn?.addEventListener('click', () => {
   updateSpdLabel();
 });
 updateSpdLabel();
+
+function applyRealSizeMode() {
+  camera.near = realSizeMode ? 0.00005 : 0.1;
+  camera.updateProjectionMatrix();
+
+  const scale = realSizeMode ? SUN_REAL_SIZE_SCALE : 1;
+  sunMesh.scale.setScalar(scale);
+
+  for (const planet of planets) {
+    const planetScale = realSizeMode ? planet.realSizeScale : 1;
+    planet.mesh.scale.setScalar(planetScale);
+    if (planet.cloudMesh) {
+      planet.cloudMesh.scale.setScalar(planetScale);
+      if (planet.cloudMesh.userData.cloudMeshB) {
+        planet.cloudMesh.userData.cloudMeshB.scale.setScalar(planetScale);
+      }
+    }
+    if (planet.ring) planet.ring.scale.setScalar(planetScale);
+  }
+
+  for (const moon of moons) {
+    moon.moonMesh.scale.setScalar(realSizeMode ? moon.realSizeScale : 1);
+    setMoonOrbitScale(moon, realSizeMode);
+  }
+
+  for (const dwarf of dwarfs) {
+    const dwarfScale = realSizeMode ? dwarf.realSizeScale : 1;
+    dwarf.mesh.scale.setScalar(dwarfScale);
+    if (dwarf.charonGrp) dwarf.charonGrp.scale.setScalar(1 / dwarfScale);
+    if (dwarf.charon) dwarf.charon.scale.setScalar(realSizeMode ? (dwarf.charonRealSizeScale ?? 1) : 1);
+    if (dwarf.charon) dwarf.charonOrbitRadius = realSizeMode ? (dwarf.realCharonOrbitRadius ?? dwarf.visualCharonOrbitRadius ?? 0.6) : (dwarf.visualCharonOrbitRadius ?? 0.6);
+  }
+
+  for (const comet of comets) {
+    comet.nucleus.scale.setScalar(realSizeMode ? comet.realSizeScale : 1);
+  }
+
+  for (const probe of probes) {
+    const probeScale = realSizeMode ? probe.realSizeScale : probe.baseScale;
+    probe.mesh.scale.setScalar(probeScale);
+    if (probe.hitTarget) probe.hitTarget.scale.setScalar(1 / probeScale);
+  }
+
+  syncRealSizeUi();
+
+  if (focusMesh) {
+    targetR = getFocusTargetRadius(focusMesh);
+    if (!focusTransitioning) camR = targetR;
+  }
+}
+
+realSizeBtn?.addEventListener('click', () => {
+  realSizeMode = !realSizeMode;
+  applyRealSizeMode();
+});
 
 // ── Timeline slider ───────────────────────────────────────────────────────────
 // Slider value = years offset from J2000. simTime = slider value.
@@ -2967,9 +3390,56 @@ document.getElementById('btn-orion').addEventListener('click', () => {
   closeMobilePanels();
 });
 let focusMesh = null;
-// Consistent snap zoom: object fills ~30% of view regardless of size
-// FOV=48°, tan(24°)=0.4452, factor = 1/(0.30*0.4452) = 7.49
-function snapZoom(r) { return Math.max(5, r * 7.5); }
+// Focus framing factor by object class.
+const FOCUS_SNAP_DIAMETER_FACTOR = 3.75;
+const FOCUS_MIN_DIAMETER_FACTOR = 0.92;
+
+function snapZoom(diameter, factor=FOCUS_SNAP_DIAMETER_FACTOR) {
+  return Math.max(camera.near * 2, diameter * factor);
+}
+
+function snapZoomForMesh(mesh, fallbackRadius=1) {
+  return snapZoom(getRenderedDiameter(mesh, fallbackRadius));
+}
+
+function getProbeFocusRadius(probe) {
+  if (!probe) return 1;
+  return realSizeMode ? probe.focusRadius : probe.symbolicFocusRadius;
+}
+
+function getProbeSnapRadius(probe) {
+  if (!probe) return 1;
+  return realSizeMode ? probe.realSizeSnapRadius : probe.symbolicFocusRadius;
+}
+
+function getMinFocusDistance(mesh, fallbackRadius=1) {
+  if (!mesh) return 8;
+  const probe = probes.find(p => p.mesh === mesh);
+  if (probe) return Math.max(camera.near * 2, getProbeFocusRadius(probe) * 2 * FOCUS_MIN_DIAMETER_FACTOR);
+  return Math.max(camera.near * 2, getRenderedDiameter(mesh, fallbackRadius) * FOCUS_MIN_DIAMETER_FACTOR);
+}
+
+function getFocusTargetRadius(mesh) {
+  if (!mesh) return VIEW_DEFAULTS[viewMode].r;
+  if (mesh === sunMesh) return snapZoomForMesh(sunMesh, 4.5);
+
+  const planet = planets.find(p => p.mesh === mesh);
+  if (planet) return snapZoomForMesh(planet.mesh, planet.d.r);
+
+  const moon = moons.find(m => m.moonMesh === mesh);
+  if (moon) return snapZoomForMesh(moon.moonMesh, moon.md.r);
+
+  const dwarf = dwarfs.find(d => d.mesh === mesh);
+  if (dwarf) return snapZoomForMesh(dwarf.mesh, dwarf.d.r);
+
+  const comet = comets.find(c => c.nucleus === mesh);
+  if (comet) return snapZoomForMesh(comet.nucleus, comet.cd.r);
+
+  const probe = probes.find(p => p.mesh === mesh);
+  if (probe) return snapZoom(getProbeSnapRadius(probe) * 2);
+
+  return snapZoomForMesh(mesh, 1);
+}
 let focusTransitioning = false; // true during the snap-to animation
 
 function setFocus(name) {
@@ -2998,15 +3468,7 @@ function setFocus(name) {
   document.getElementById('btn-orion').classList.remove('active');
   lookAtSun = false;
   btnLookAtSun.classList.remove('active');
-  // Zoom: sun zooms in close, planets zoom to their orbit scale, null = solar view
-  if (focusMesh === sunMesh) {
-    targetR = 80; // close-up view of the Sun
-  } else if (focusMesh) {
-    const p = planets.find(p => p.mesh === focusMesh);
-    if (p) targetR = snapZoom(p.d.r);
-  } else {
-    targetR = VIEW_DEFAULTS[viewMode].r;
-  }
+  targetR = getFocusTargetRadius(focusMesh);
   closeMobilePanels();
 }
 
@@ -3024,7 +3486,7 @@ document.querySelectorAll('.fbtn[data-focus-dwarf]').forEach(b => {
     b.classList.add('active');
     focusMesh = dw.mesh;
     userPanOffset.set(0,0,0);
-    targetR = snapZoom(dw.d.r);
+    targetR = getFocusTargetRadius(focusMesh);
     lookAtSun = false;
     btnLookAtSun.classList.remove('active');
     showInfo('dwarf', dw);
@@ -3042,7 +3504,7 @@ document.querySelectorAll('.fbtn[data-focus-comet]').forEach(b => {
     b.classList.add('active');
     focusMesh = cm.nucleus;
     userPanOffset.set(0,0,0);
-    targetR = snapZoom(cm.cd.r);
+    targetR = getFocusTargetRadius(focusMesh);
     lookAtSun = false;
     btnLookAtSun.classList.remove('active');
     showInfo('comet', cm);
@@ -3060,7 +3522,7 @@ document.querySelectorAll('.fbtn[data-focus-probe]').forEach(b => {
     b.classList.add('active');
     focusMesh = pr.mesh;
     userPanOffset.set(0,0,0);
-    targetR = snapZoom(3);
+    targetR = getFocusTargetRadius(focusMesh);
     lookAtSun = false;
     btnLookAtSun.classList.remove('active');
     showInfo('probe', pr);
@@ -3099,7 +3561,7 @@ const _focusLocalCameraPos = new THREE.Vector3();
 const _focusWorldQuat2 = new THREE.Quaternion();
 function rotateGeoLockView(dx, dy) {
   if (!focusMesh || !geoLock) return;
-  const radius = focusMesh.geometry?.parameters?.radius ?? 1;
+  const radius = getRenderedRadius(focusMesh, 1);
   const yaw = -dx * 0.005;
   const pitch = -dy * 0.005;
   geoLockLocalCameraDir.applyAxisAngle(_geoLockLocalNorth, yaw).normalize();
@@ -3150,7 +3612,7 @@ btnGeoLock.addEventListener('click', () => {
     focusMesh.updateWorldMatrix(true, false);
     _focusLocalCameraPos.copy(camera.position);
     geoLockLocalCameraDir.copy(focusMesh.worldToLocal(_focusLocalCameraPos)).normalize();
-    const radius = focusMesh.geometry.parameters.radius;
+    const radius = getRenderedRadius(focusMesh, 1);
     geoLockLocalTargetPos.copy(geoLockLocalCameraDir).multiplyScalar(radius);
     focusMesh.getWorldQuaternion(_focusWorldQuat2).invert();
     geoLockLocalUp.copy(camera.up).applyQuaternion(_focusWorldQuat2).normalize();
@@ -3218,7 +3680,7 @@ window.addEventListener('mousemove', e=>{
 });
 renderer.domElement.addEventListener('wheel', e=>{
   // Minimum zoom: close enough to see the focused object clearly
-  const minR = focusMesh ? Math.max(focusMesh.geometry?.parameters?.radius ?? 1, 1) * 2.5 : 8;
+  const minR = focusMesh ? getMinFocusDistance(focusMesh, 1) : 8;
   camR = Math.max(minR, Math.min(80000, camR*(1+e.deltaY*0.001)));
   targetR = camR;
 },{passive:true});
@@ -3248,7 +3710,7 @@ renderer.domElement.addEventListener('touchmove',e=>{
   if(e.touches.length===2){
     const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
     if(lastTD){
-      const minR = focusMesh ? Math.max(focusMesh.geometry?.parameters?.radius ?? 1, 1) * 2.5 : 8;
+      const minR = focusMesh ? getMinFocusDistance(focusMesh, 1) : 8;
       camR=Math.max(minR,Math.min(80000,camR*(lastTD/d)));targetR=camR;
     }
     lastTD=d;
@@ -3334,10 +3796,10 @@ function renderInfoContent(type, obj) {
     set('pi-name',obj.d.name); set('pi-diam',obj.d.diameter); set('pi-dist',obj.d.dist);
     set('pi-year',obj.d.year); set('pi-moons',obj.d.moons); set('pi-vel',getInfoVelocity(type, obj)); set('pi-type',obj.d.type);
   } else if (type==='moon') {
-    lbl('ORBITS','ORBITAL PERIOD','ECCENTRICITY','INCLINATION','ORBITAL SPEED','TYPE');
-    set('pi-name',obj.md.name); set('pi-diam',obj.md.planet);
-    set('pi-dist',(obj.md.period*365.25).toFixed(2)+' days');
-    set('pi-year',obj.md.ecc.toFixed(3)); set('pi-moons',obj.md.inc.toFixed(1)+'°'); set('pi-vel',getInfoVelocity(type, obj));
+    lbl('DIAMETER','ORBITS','ORBITAL PERIOD','INCLINATION','ORBITAL SPEED','TYPE');
+    set('pi-name',obj.md.name); set('pi-diam',obj.md.diameter ?? '—');
+    set('pi-dist',obj.md.planet);
+    set('pi-year',(obj.md.period*365.25).toFixed(2)+' days'); set('pi-moons',obj.md.inc.toFixed(1)+'°'); set('pi-vel',getInfoVelocity(type, obj));
     set('pi-type','Natural satellite');
   } else if (type==='dwarf') {
     lbl('DIAMETER','FROM SUN','ORBITAL PERIOD','MOONS','ORBITAL SPEED','TYPE');
@@ -3345,7 +3807,7 @@ function renderInfoContent(type, obj) {
     set('pi-year',obj.d.year); set('pi-moons',obj.d.moons); set('pi-vel',getInfoVelocity(type, obj)); set('pi-type',obj.d.type);
   } else if (type==='comet') {
     lbl('NUCLEUS SIZE','ECCENTRICITY','ORBITAL PERIOD','INCLINATION','ORBITAL SPEED','TYPE');
-    set('pi-name',obj.cd.name); set('pi-diam','~'+Math.round(obj.cd.r*10)+'km');
+    set('pi-name',obj.cd.name); set('pi-diam',obj.cd.diameter ?? ('~'+Math.round(obj.cd.r*10)+'km'));
     set('pi-dist',obj.cd.ecc.toFixed(4));
     set('pi-year',obj.cd.period<1000?obj.cd.period.toFixed(1)+' yrs':(obj.cd.period/1000).toFixed(1)+'k yrs');
     set('pi-moons',obj.cd.inc.toFixed(1)+'°'); set('pi-vel',getInfoVelocity(type, obj)); set('pi-type','Comet');
@@ -3586,24 +4048,36 @@ renderer.domElement.addEventListener('click',e=>{
       if(focusMesh===p.mesh){ focusMesh=null; targetR=VIEW_DEFAULTS[viewMode].r; userPanOffset.set(0,0,0); document.querySelectorAll('.fbtn').forEach(b=>b.classList.remove('active')); infoPanelDismissed=false; syncInfoPanelVisibility(); return; }
       setFocus(p.d.name);
     } else if(mn){
-      focusMesh=mn.moonMesh; userPanOffset.set(0,0,0); targetR=snapZoom(mn.md.r);
+      focusMesh=mn.moonMesh; userPanOffset.set(0,0,0); targetR=getFocusTargetRadius(focusMesh);
+      focusTransitioning = true;
+      lookAtSun = false;
+      btnLookAtSun.classList.remove('active');
       document.querySelectorAll('.fbtn').forEach(b=>b.classList.remove('active'));
       showInfo('moon', mn);
     } else {
       const dw=dwarfs.find(d=>d.mesh===h);
       const cm=comets.find(c=>c.nucleus===h);
       if(dw){
-        focusMesh=dw.mesh; userPanOffset.set(0,0,0); targetR=snapZoom(dw.d.r);
+        focusMesh=dw.mesh; userPanOffset.set(0,0,0); targetR=getFocusTargetRadius(focusMesh);
+        focusTransitioning = true;
+        lookAtSun = false;
+        btnLookAtSun.classList.remove('active');
         document.querySelectorAll('.fbtn').forEach(b=>b.classList.remove('active'));
         showInfo('dwarf', dw);
       } else if(cm){
-        focusMesh=cm.nucleus; userPanOffset.set(0,0,0); targetR=snapZoom(cm.cd.r);
+        focusMesh=cm.nucleus; userPanOffset.set(0,0,0); targetR=getFocusTargetRadius(focusMesh);
+        focusTransitioning = true;
+        lookAtSun = false;
+        btnLookAtSun.classList.remove('active');
         document.querySelectorAll('.fbtn').forEach(b=>b.classList.remove('active'));
         showInfo('comet', cm);
       } else {
         const pr=probes.find(p=>p.mesh===h||p.mesh.children.some(c=>c===h));
         if(pr){
-          focusMesh=pr.mesh; userPanOffset.set(0,0,0); targetR=snapZoom(3);
+          focusMesh=pr.mesh; userPanOffset.set(0,0,0); targetR=getFocusTargetRadius(focusMesh);
+          focusTransitioning = true;
+          lookAtSun = false;
+          btnLookAtSun.classList.remove('active');
           document.querySelectorAll('.fbtn').forEach(b=>b.classList.remove('active'));
           showInfo('probe', pr);
         }
@@ -3673,8 +4147,6 @@ function computeAnalyticTrails() {
       ? Math.min(p.d.period * 1.35, Math.min(260, Math.abs(simTime)))
       : Math.min(p.d.period * 2.0, Math.min(500, Math.abs(simTime)));
     const dt_step  = lookback / (TRAIL_PTS - 1);
-    const sinInc = Math.sin(p.d.inc * Math.PI / 180);
-    const cosInc = Math.cos(p.d.inc * Math.PI / 180);
     const pos = p.trailPosBuf;
     const col = p.trailColBuf;
     const siz = p.trailSizBuf;
@@ -3682,20 +4154,10 @@ function computeAnalyticTrails() {
 
     for (let i = 0; i < TRAIL_PTS; i++) {
       const t  = simTime - lookback + i * dt_step;
-      const M  = (2 * Math.PI * t / p.d.period) + p.angle0;
-      const E  = keplerE(M, p.d.ecc);
-      const nu = 2*Math.atan2(Math.sqrt(1+p.d.ecc)*Math.sin(E/2), Math.sqrt(1-p.d.ecc)*Math.cos(E/2));
-      const r  = p.d.sma*(1-p.d.ecc*p.d.ecc)/(1+p.d.ecc*Math.cos(nu));
-      const u  = (p.omegaRad - p.OmegaRad) + nu;
-      const cO = Math.cos(p.OmegaRad), sO = Math.sin(p.OmegaRad);
-      const ci = Math.cos(p.incRad),   si = Math.sin(p.incRad);
-      const xEcl = r*(cO*Math.cos(u) - sO*Math.sin(u)*ci);
-      const yEcl = r*(sO*Math.cos(u) + cO*Math.sin(u)*ci);
-      const zEcl = r*Math.sin(u)*si;
-      const lx = xEcl; const lz = -yEcl; // sim x,z in ecliptic plane
-      const ix =  lx;
-      const iy = -lz * sinInc;
-      const iz =  lz * cosInc;
+      const trailPos = getPlanetScenePositionAtTime(p, t, _wpos);
+      const ix = trailPos.x;
+      const iy = trailPos.y;
+      const iz = trailPos.z;
       // Trail Z: offset relative to current Sun position (solarPivot always at origin)
       // so trails spiral backward from current position
       const sunZatT = (t - simTime) * GALACTIC_SCENE_SPEED;
@@ -3826,18 +4288,7 @@ function animate(){
 
   // ── Planet positions ───────────────────────────────────────────────────────
   for(const p of planets){
-    const M = (2*Math.PI*simTime/p.d.period) + p.angle0;
-    const E = keplerE(M, p.d.ecc);
-    // Correct Kepler: use true anomaly + omega for accurate ecliptic position
-    const nu = 2*Math.atan2(Math.sqrt(1+p.d.ecc)*Math.sin(E/2), Math.sqrt(1-p.d.ecc)*Math.cos(E/2));
-    const r  = p.d.sma*(1-p.d.ecc*p.d.ecc)/(1+p.d.ecc*Math.cos(nu));
-    const u  = (p.omegaRad - p.OmegaRad) + nu; // arg of latitude from ascending node
-    const cO = Math.cos(p.OmegaRad), sO = Math.sin(p.OmegaRad);
-    const ci = Math.cos(p.incRad),   si = Math.sin(p.incRad);
-    const xEcl = r*(cO*Math.cos(u) - sO*Math.sin(u)*ci);
-    const yEcl = r*(sO*Math.cos(u) + cO*Math.sin(u)*ci);
-    const zEcl = r*Math.sin(u)*si;
-    p.tiltGroup.position.set(xEcl, zEcl, -yEcl); // planet position (tiltGroup moves, mesh stays at origin within)
+    getPlanetScenePositionAtTime(p, simTime, p.tiltGroup.position);
     // Axial rotation around correctly tilted axis
     p.mesh.rotation.y = (simTime * 365.25 / p.d.rotPeriod) * Math.PI * 2;
     if (p.mesh.userData.travelMarker) updateEarthTravelMarker(p);
@@ -3890,7 +4341,11 @@ function animate(){
     // Charon orbits Pluto
     if (p.charon) {
       p.charonAngle += 0.00015;
-      p.charon.position.set(Math.cos(p.charonAngle)*0.6, 0, Math.sin(p.charonAngle)*0.6);
+      p.charon.position.set(
+        Math.cos(p.charonAngle) * p.charonOrbitRadius,
+        0,
+        Math.sin(p.charonAngle) * p.charonOrbitRadius
+      );
     }
   }
   for(const m of moons){
@@ -3903,7 +4358,7 @@ function animate(){
     // We store the orbital position in moonIncGrp's own space (before inc rotation),
     // but since moonIncGrp is at origin of incGrp, we need to translate it to planet pos.
     m.moonIncGrp.position.copy(m.parentPlanet.tiltGroup.position);
-    m.moonMesh.position.set(m.md.sma*Math.cos(E) - m.c, 0, -m.b*Math.sin(E));
+    m.moonMesh.position.set(m.orbitSma*Math.cos(E) - m.c, 0, -m.b*Math.sin(E));
     if (m.spinModel.mode === 'synchronous') {
       m.moonIncGrp.getWorldPosition(_moonTargetWorld);
       m.moonMesh.lookAt(_moonTargetWorld);
@@ -4009,7 +4464,7 @@ function animate(){
     camera.lookAt(camTarget);
   }
 
-  sunMesh.scale.setScalar(1);
+  sunMesh.scale.setScalar(realSizeMode ? SUN_REAL_SIZE_SCALE : 1);
   // Sun sidereal rotation: 25.38 days at equator
   sunMesh.rotation.y = (simTime * 365.25 / 25.38) * Math.PI * 2;
 
@@ -4064,6 +4519,7 @@ if (introOverlay) {
 }
 
 // Init view
+applyRealSizeMode();
 setView('solar');
 animate();
 
@@ -4133,30 +4589,30 @@ animate();
 
     if (type === 'sun') {
       focusMesh = sunMesh;
-      targetR = snapZoom(109);
+      targetR = getFocusTargetRadius(focusMesh);
       showInfo('sun', null);
     } else if (type === 'planet') {
       focusMesh = obj.mesh;
-      targetR = snapZoom(obj.d.r);
+      targetR = getFocusTargetRadius(focusMesh);
       showInfo('planet', obj);
       // highlight matching fbtn if exists
       const btn = [...document.querySelectorAll('.fbtn[data-focus]')].find(b => b.dataset.focus === obj.d.name);
       if (btn) btn.classList.add('active');
     } else if (type === 'moon') {
       focusMesh = obj.moonMesh;
-      targetR = snapZoom(obj.md.r);
+      targetR = getFocusTargetRadius(focusMesh);
       showInfo('moon', obj);
     } else if (type === 'dwarf') {
       focusMesh = obj.mesh;
-      targetR = snapZoom(obj.d.r);
+      targetR = getFocusTargetRadius(focusMesh);
       showInfo('dwarf', obj);
     } else if (type === 'comet') {
       focusMesh = obj.nucleus;
-      targetR = snapZoom(obj.cd.r);
+      targetR = getFocusTargetRadius(focusMesh);
       showInfo('comet', obj);
     } else if (type === 'probe') {
       focusMesh = obj.mesh;
-      targetR = snapZoom(3);
+      targetR = getFocusTargetRadius(focusMesh);
       showInfo('probe', obj);
     }
 
