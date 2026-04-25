@@ -50,6 +50,57 @@ Project layout:
 
 No build step is required.
 
+## Ephemeris API
+
+This repo now includes an IIS-friendly ASP.NET Core backend scaffold in [backend/Sol.Api](backend/Sol.Api) for serving ephemeris data from an existing SQL Server database.
+
+Run it locally from the project root:
+
+```bash
+dotnet run --project backend/Sol.Api
+```
+
+By default the API listens on the standard ASP.NET Core development URLs. The frontend can keep running as a static site, while the backend serves ephemeris data from SQL Server.
+
+Configuration lives in [backend/Sol.Api/appsettings.json](backend/Sol.Api/appsettings.json):
+
+- `ConnectionStrings:EphemerisDb`: points at `DC01/sol_ephemeris` by default, but without embedded credentials.
+- `EphemerisSql:BodiesQuery`: query that returns `Id`, `Slug`, `Name`, and optional `Category`.
+- `EphemerisSql:BodyBySlugQuery`: query that returns one body row using the same aliases.
+- `EphemerisSql:SamplesRangeQuery`: query that returns `BodyId`, `SampleTimeUtc`, `X`, `Y`, `Z`, and optional `Vx`, `Vy`, `Vz`, `Frame`.
+
+The API now assumes a concrete starter schema with these tables:
+
+- `dbo.CelestialBodies`
+- `dbo.EphemerisSamples`
+
+The install script is in [backend/Sol.Api/sql/001_initial_schema.sql](backend/Sol.Api/sql/001_initial_schema.sql).
+
+Local development credentials should live in .NET user-secrets so they never enter git-tracked files:
+
+```bash
+dotnet user-secrets --project backend/Sol.Api set "ConnectionStrings:EphemerisDb" "Server=DC01;Database=sol_ephemeris;User ID=sol_reader;Password=<your-password>;Encrypt=False;TrustServerCertificate=True;"
+dotnet run --project backend/Sol.Api
+```
+
+You can inspect or update the local secret store with:
+
+```bash
+dotnet user-secrets --project backend/Sol.Api list
+```
+
+For IIS, do not use user-secrets. Set `ConnectionStrings__EphemerisDb` in the application environment or deployment configuration on the server. The recommended runtime login for the API is the read-only `sol_reader` account. Use `sol_user` only for import or administrative tooling.
+
+Available endpoints:
+
+- `GET /api/health`
+- `GET /api/bodies`
+- `GET /api/bodies/{slug}`
+- `GET /api/ephemeris/{bodyId}?startUtc=2026-01-01T00:00:00Z&endUtc=2026-01-02T00:00:00Z&limit=1440`
+- `GET /api/ephemeris/by-slug/{slug}?startUtc=2026-01-01T00:00:00Z&endUtc=2026-01-02T00:00:00Z&limit=1440`
+
+For IIS hosting, publish the ASP.NET Core app and configure the IIS site or application to point at the published output. SQL Server can remain on the same host; the API uses the normal SQL Server connection string and does not require SQLite or any embedded database.
+
 ## Current Feature Set
 
 ### Core simulation
