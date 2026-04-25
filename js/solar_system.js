@@ -4030,7 +4030,14 @@ function hoverCheck(cx,cy){
     }
   }
 }
+let suppressSceneClickUntil = 0;
+
+function suppressSceneClick(durationMs = 400) {
+  suppressSceneClickUntil = performance.now() + durationMs;
+}
+
 renderer.domElement.addEventListener('click',e=>{
+  if (performance.now() < suppressSceneClickUntil) return;
   if(mouseDragDist > 4) return; // suppress click after drag
   const h=getHit(e.clientX,e.clientY);
   if(!h){
@@ -4668,6 +4675,7 @@ animate();
         sub.className = 'search-sub';
         sub.textContent = entry.sub;
         const runEntry = () => {
+          suppressSceneClick();
           entry.action();
           dropdown.style.display = 'none';
           input.blur();
@@ -4711,8 +4719,14 @@ animate();
     if (e.key === 'ArrowDown') { e.preventDefault(); setActive(activeIdx + 1); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(activeIdx - 1); }
     else if (e.key === 'Enter') {
-      if (activeIdx >= 0) visibleItems[activeIdx].entry.action();
-      else if (visibleItems.length === 1) visibleItems[0].entry.action();
+      if (activeIdx >= 0) {
+        suppressSceneClick();
+        visibleItems[activeIdx].entry.action();
+      }
+      else if (visibleItems.length === 1) {
+        suppressSceneClick();
+        visibleItems[0].entry.action();
+      }
     }
     else if (e.key === 'Escape') { dropdown.style.display = 'none'; input.blur(); }
   });
