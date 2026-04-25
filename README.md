@@ -115,10 +115,13 @@ No build step is required.
 - Use the right-side `OBJECT` dropdown to focus planets, dwarf planets, comets, and Voyager probes.
 - Use the timeline panel for step buttons, landmark jumps, `REALTIME`, `PAUSE`, and the live `NOW` hardpoint.
 - Use the right-side controls stack for `REAL SIZE`, orbit/trail/constellation toggles, and view-lock shortcuts.
+- The built-in navigation/help pane lists the keyboard shortcuts, including `R` for realtime and `S` for real-size mode.
 
 ### Keyboard
 - `/`: focus search.
 - `Space`: pause or resume time.
+- `R`: toggle realtime mode.
+- `S`: toggle real-size mode.
 - `O`: toggle orbits.
 - `T`: toggle trails.
 - `C`: toggle constellations.

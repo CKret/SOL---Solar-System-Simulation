@@ -1325,7 +1325,7 @@ body:not(.mobile-ui) #focus-bar {
     <button class="tlstep" data-step="1000000">+1M yr</button>
   </div>
   <div id="tl-modebtns">
-    <button class="sbtn tlmode" id="realtime-btn" title="Realtime simulation speed">REALTIME</button>
+    <button class="sbtn tlmode" id="realtime-btn" title="R">REALTIME</button>
     <button class="sbtn tlmode" id="pause-btn" title="Space">PAUSE</button>
   </div>
   <input type="range" id="tl" min="-500000" max="500000" value="26.29" step="100">
@@ -1411,6 +1411,7 @@ body:not(.mobile-ui) #focus-bar {
     <div class="help-label">KEYBOARD</div>
     <div class="help-row"><span class="help-key">/</span><span class="help-desc">focus search</span></div>
     <div class="help-row"><span class="help-key">SPACE</span><span class="help-desc">pause or resume time</span></div>
+    <div class="help-row"><span class="help-key">R / S</span><span class="help-desc">toggle realtime, real size</span></div>
     <div class="help-row"><span class="help-key">O / T / C</span><span class="help-desc">toggle orbits, trails, constellations</span></div>
     <div class="help-row"><span class="help-key">L / G / H</span><span class="help-desc">look at Sun, geo lock, help</span></div>
     <div class="help-row"><span class="help-key">1 / 2</span><span class="help-desc">solar or vortex view</span></div>
@@ -1464,7 +1465,7 @@ body:not(.mobile-ui) #focus-bar {
       </optgroup>
     </select>
   </label>
-  <button class="sbtn" id="real-size-btn" title="Render planets at real relative sizes">REAL SIZE</button>
+  <button class="sbtn" id="real-size-btn" title="S">REAL SIZE</button>
   <button class="sbtn" id="trails-btn" title="T">TRAILS ON</button>
   <button class="sbtn" id="orbits-btn" title="O">ORBITS ON</button>
   <button class="sbtn" id="const-btn" title="C">CONSTELLATIONS ON</button>
@@ -1479,7 +1480,7 @@ body:not(.mobile-ui) #focus-bar {
   <strong>SCROLL</strong> — zoom<br>
   <strong>LEFT DRAG</strong> — orbit view<br>
   <strong>RIGHT DRAG</strong> — roll focus / pan free view<br>
-  <strong>/</strong> search &nbsp; <strong>SPACE</strong> pause &nbsp; <strong>H</strong> help
+  <strong>/</strong> search &nbsp; <strong>SPACE</strong> pause &nbsp; <strong>R</strong> realtime &nbsp; <strong>S</strong> real size &nbsp; <strong>H</strong> help
 </div>
 
 <div id="search-panel">

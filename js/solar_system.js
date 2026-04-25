@@ -3037,11 +3037,13 @@ spdEl.addEventListener('input', () => {
   followNowMode = false;
   updateSpdLabel();
 });
-realtimeBtn?.addEventListener('click', () => {
+function toggleRealtimeMode() {
   realtimeMode = !realtimeMode;
   if (!realtimeMode) followNowMode = false;
   updateSpdLabel();
-});
+}
+
+realtimeBtn?.addEventListener('click', toggleRealtimeMode);
 updateSpdLabel();
 syncPauseUi();
 
@@ -3095,10 +3097,12 @@ function applyRealSizeMode() {
   }
 }
 
-realSizeBtn?.addEventListener('click', () => {
+function toggleRealSizeMode() {
   realSizeMode = !realSizeMode;
   applyRealSizeMode();
-});
+}
+
+realSizeBtn?.addEventListener('click', toggleRealSizeMode);
 
 // ── Timeline slider ───────────────────────────────────────────────────────────
 // Slider value = years offset from J2000. simTime = slider value.
@@ -4862,6 +4866,12 @@ document.addEventListener('keydown', e => {
   } else if (key === 'c') {
     e.preventDefault();
     document.getElementById('const-btn').click();
+  } else if (key === 'r') {
+    e.preventDefault();
+    toggleRealtimeMode();
+  } else if (key === 's') {
+    e.preventDefault();
+    toggleRealSizeMode();
   } else if (key === 'l') {
     e.preventDefault();
     btnLookAtSun.click();
