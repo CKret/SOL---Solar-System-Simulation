@@ -5,6 +5,7 @@ This changelog is derived from the project's git commit messages and is listed n
 ## 2026-04-25
 
 ### Added
+- `29eca24` Added missing comets in the list. Fixed so that SL9 does not exist after impact with Jupiter in July 1994.
 - `3eb12f0` Added keyboard shortcuts to Realtime and Real Size buttons.
 - `561648d` Added `REAL SIZE` mode.
 - `9f9dcb0` Added the realtime button.
