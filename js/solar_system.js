@@ -2603,7 +2603,20 @@ let targetR   = VIEW_DEFAULTS.solar.r;
 // Speed: sim-years per real second
 const spdEl  = document.getElementById('spd');
 const spdVal_el = document.getElementById('spd-val');
+const realtimeBtn = document.getElementById('realtime-btn');
+const REALTIME_SIM_SPEED = 1 / (365.25 * 24 * 3600);
+let realtimeMode = false;
+
+function syncRealtimeUi() {
+  if (!realtimeBtn) return;
+  realtimeBtn.classList.toggle('active', realtimeMode);
+  realtimeBtn.textContent = realtimeMode ? 'REALTIME ON' : 'REALTIME';
+  realtimeBtn.setAttribute('aria-pressed', realtimeMode ? 'true' : 'false');
+  spdEl.disabled = realtimeMode;
+}
+
 function getSimSpeed(){
+  if (realtimeMode) return REALTIME_SIM_SPEED;
   // Slider 0-100 maps to 1 hour/s → 3 years/s
   // 1 hour = 1/8760 years, 3 years = 3
   // log10(1/8760) ≈ -3.943, log10(3) ≈ 0.477
@@ -2611,14 +2624,27 @@ function getSimSpeed(){
   return Math.pow(10, t * (0.477 - (-3.943)) + (-3.943));
 }
 function updateSpdLabel(){
+  if (realtimeMode) {
+    spdVal_el.textContent = '1 s/s';
+    syncRealtimeUi();
+    return;
+  }
   const s = getSimSpeed();
   const d = s * 365.25;
   const h = s * 8760;
   if      (h < 24)   spdVal_el.textContent = h.toFixed(1)  + ' hr/s';
   else if (d < 365)  spdVal_el.textContent = d.toFixed(1)  + ' d/s';
   else               spdVal_el.textContent = s.toFixed(2)  + ' yr/s';
+  syncRealtimeUi();
 }
-spdEl.addEventListener('input', updateSpdLabel);
+spdEl.addEventListener('input', () => {
+  realtimeMode = false;
+  updateSpdLabel();
+});
+realtimeBtn?.addEventListener('click', () => {
+  realtimeMode = !realtimeMode;
+  updateSpdLabel();
+});
 updateSpdLabel();
 
 // ── Timeline slider ───────────────────────────────────────────────────────────
@@ -3378,6 +3404,16 @@ function getHit(cx,cy){
   if (obj.userData.cometNucleus) return obj.userData.cometNucleus;
   // Resolve coma (child of nucleus) back to its nucleus
   if (obj.parent && comets.some(c => c.nucleus === obj.parent)) return obj.parent;
+  let current = obj;
+  while (current) {
+    if (current === sunMesh) return current;
+    if (planets.some(p => p.mesh === current)) return current;
+    if (moons.some(m => m.moonMesh === current)) return current;
+    if (dwarfs.some(d => d.mesh === current)) return current;
+    if (comets.some(c => c.nucleus === current)) return current;
+    if (probes.some(p => p.mesh === current)) return current;
+    current = current.parent;
+  }
   return obj;
 }
 
