@@ -1028,9 +1028,10 @@ _dotCtx.fillRect(0,0,16,16);
 const dotTex = new THREE.CanvasTexture(_dotCanvas);
 
 // ── Solar pivot — moves through galactic space in vortex/top mode ─────────────
-// Tilt by ~60°: ecliptic plane is angled to the direction of travel (+Z),
-// so planet orbits produce helix/corkscrew world-space paths, not flat circles.
-const ECLIPTIC_TILT = THREE.MathUtils.degToRad(-90);
+// Approximate the ecliptic-to-galactic plane angle (~60.19°).
+// World +Y is treated as galactic north and +Z as the travel direction within the galactic plane.
+// Positive tilt makes ecliptic north lean toward the forward travel direction.
+const ECLIPTIC_TILT = THREE.MathUtils.degToRad(60.19);
 const solarPivot = new THREE.Group();
 solarPivot.rotation.x = ECLIPTIC_TILT;
 scene.add(solarPivot);
@@ -1144,6 +1145,74 @@ const trailPointMat = new THREE.ShaderMaterial({
 // ── Build planets ─────────────────────────────────────────────────────────────
 const TRAIL_LEN = 1200;
 const planets = [];
+
+function createEarthOrientationMarker(radius) {
+  const markerRadius = radius * 1.16;
+  const group = new THREE.Group();
+
+  const axisMat = new THREE.LineBasicMaterial({ color:0xffffff, transparent:true, opacity:0.9 });
+  const equatorMat = new THREE.LineBasicMaterial({ color:0xffd166, transparent:true, opacity:0.8 });
+  const meridianMat = new THREE.LineBasicMaterial({ color:0x66e0ff, transparent:true, opacity:0.72 });
+  const northMat = new THREE.MeshBasicMaterial({ color:0xff5050 });
+  const southMat = new THREE.MeshBasicMaterial({ color:0x4da6ff });
+  const forwardMat = new THREE.MeshBasicMaterial({ color:0x5cff7a });
+
+  const axisGeo = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, -markerRadius, 0),
+    new THREE.Vector3(0, markerRadius, 0),
+  ]);
+  group.add(new THREE.Line(axisGeo, axisMat));
+
+  const equatorPts = [];
+  for (let i = 0; i < 64; i++) {
+    const a = (i / 64) * Math.PI * 2;
+    equatorPts.push(new THREE.Vector3(Math.cos(a) * markerRadius, 0, Math.sin(a) * markerRadius));
+  }
+  group.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(equatorPts), equatorMat));
+
+  const meridianPts = [];
+  for (let i = 0; i <= 32; i++) {
+    const a = -Math.PI / 2 + (i / 32) * Math.PI;
+    meridianPts.push(new THREE.Vector3(0, Math.sin(a) * markerRadius, Math.cos(a) * markerRadius));
+  }
+  group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(meridianPts), meridianMat));
+
+  const markerGeo = new THREE.SphereGeometry(radius * 0.09, 12, 12);
+  const north = new THREE.Mesh(markerGeo, northMat);
+  north.position.y = markerRadius;
+  group.add(north);
+
+  const south = new THREE.Mesh(markerGeo, southMat);
+  south.position.y = -markerRadius;
+  group.add(south);
+
+  const forward = new THREE.Mesh(new THREE.SphereGeometry(radius * 0.07, 12, 12), forwardMat);
+  forward.position.z = markerRadius;
+  group.add(forward);
+
+  return group;
+}
+
+function createEarthTravelMarker(radius) {
+  const markerLen = radius * 1.85;
+  const shaftMat = new THREE.LineBasicMaterial({ color:0xff66ff, transparent:true, opacity:0.9 });
+  const tipMat = new THREE.MeshBasicMaterial({ color:0xff66ff });
+  const group = new THREE.Group();
+
+  const shaftGeo = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3(0, 0, markerLen),
+  ]);
+  group.add(new THREE.Line(shaftGeo, shaftMat));
+
+  const tip = new THREE.Mesh(new THREE.ConeGeometry(radius * 0.11, radius * 0.28, 12), tipMat);
+  tip.rotation.x = Math.PI / 2;
+  tip.position.z = markerLen;
+  group.add(tip);
+
+  return group;
+}
+
 for (const d of PD) {
   const b = d.sma * Math.sqrt(1 - d.ecc*d.ecc);
   const c = d.sma * d.ecc; // focus offset
@@ -1181,6 +1250,17 @@ for (const d of PD) {
     ? new THREE.MeshPhongMaterial({ map:tex, specular:0x000000, shininess:0 })
     : new THREE.MeshPhongMaterial({ map:tex, shininess: d.name==='JUPITER'||d.name==='SATURN' ? 8 : 15 });
   const mesh = new THREE.Mesh(new THREE.SphereGeometry(d.r, 40, 40), mat);
+  if (d.name === 'EARTH') {
+    const orientationMarker = createEarthOrientationMarker(d.r);
+    orientationMarker.visible = false;
+    mesh.add(orientationMarker);
+    mesh.userData.orientationMarker = orientationMarker;
+
+    const travelMarker = createEarthTravelMarker(d.r);
+    travelMarker.visible = false;
+    mesh.add(travelMarker);
+    mesh.userData.travelMarker = travelMarker;
+  }
   // Earth cloud layer — separate transparent sphere slightly larger than Earth
   let cloudMesh = null;
   if (d.name === 'EARTH') {
@@ -1493,40 +1573,26 @@ self.onmessage=function(e){
       }
     };
   }
-  // tiltGroup applies axial tilt. We set it in WORLD space, compensating for solarPivot.
-  // solarPivot.rotation.x = -PI/2, so world coords need R_x(+PI/2) to get solarPivot local.
-  // We want the mesh's spin axis (local +Y after tiltGroup) to point along worldPole in world.
-  // worldPole: ecliptic unit vector (ecl_x, ecl_z, -ecl_y) in sim world coords.
+  // tiltGroup applies axial tilt in solarPivot local space so it stays locked to the ecliptic.
   const tiltGroup = new THREE.Group();
   const _oblDeg = { MERCURY:7.04, VENUS:177.36, EARTH:23.44, MARS:25.19,
                     JUPITER:3.13, SATURN:26.73, URANUS:97.77, NEPTUNE:28.32 }[d.name];
   const _lonDeg  = { MERCURY:280.0, VENUS:272.8, EARTH:90.0, MARS:352.9,
                     JUPITER:336.0, SATURN:40.6, URANUS:257.3, NEPTUNE:299.4 }[d.name];
   if (_oblDeg !== undefined) {
-    // In solarPivot local space: ecliptic (x,y,z) maps directly to local (x,y,z).
-    // Proof: world=R_x(-90°)*local → local=R_x(+90°)*world.
-    // Ecliptic→world: wx=ecl_x, wy=ecl_z, wz=-ecl_y.
-    // World→local: lx=wx, ly=-wz=ecl_y, lz=wy=ecl_z. So local=(ecl_x,ecl_y,ecl_z). ✓
     const obl = THREE.MathUtils.degToRad(_oblDeg);
     const lon = THREE.MathUtils.degToRad(_lonDeg);
     // Pole in ecliptic coords: (sin(obl)*cos(lon), sin(obl)*sin(lon), cos(obl))
-    // Mapping ecliptic→solarPivot local: positions use set(xEcl, zEcl, -yEcl)
-    //   so: local_x=ecl_x, local_y=ecl_z, local_z=-ecl_y
     const ecl_x = Math.sin(obl) * Math.cos(lon);
     const ecl_y = Math.sin(obl) * Math.sin(lon);
     const ecl_z = Math.cos(obl);
-    const tx =  ecl_x;
-    const ty =  ecl_z;   // ecliptic north (ecl_z) maps to local +Y
-    const tz = -ecl_y;   // -ecl_y maps to local +Z
-    // Rotate tiltGroup so local +Y → (tx, ty, tz)
-    const target = new THREE.Vector3(tx, ty, tz).normalize();
-    const from   = new THREE.Vector3(0, 1, 0);
+    const target = new THREE.Vector3(ecl_x, ecl_z, -ecl_y).normalize();
+    const from = new THREE.Vector3(0, 1, 0);
     const rotAxis = new THREE.Vector3().crossVectors(from, target);
-    if (rotAxis.length() > 1e-6) {
+    if (rotAxis.lengthSq() > 1e-12) {
       const angle = Math.acos(Math.max(-1, Math.min(1, from.dot(target))));
       tiltGroup.setRotationFromAxisAngle(rotAxis.normalize(), angle);
     } else if (from.dot(target) < 0) {
-      // 180° flip (Venus)
       tiltGroup.setRotationFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI);
     }
   }
@@ -1594,7 +1660,7 @@ self.onmessage=function(e){
 
   const tc = new THREE.Color(d.color);
 
-  planets.push({
+  const planet = {
     d, incGrp, tiltGroup, mesh, cloudMesh, orbitLine, trailLine, trailGeo, trailPosBuf, trailColBuf, trailSizBuf, trailWorldPts,
     tc, ring: ringRef,
     b, c,
@@ -1602,7 +1668,8 @@ self.onmessage=function(e){
     omegaRad: d.omega * Math.PI / 180,           // longitude of perihelion
     OmegaRad: (d.Omega||0) * Math.PI / 180,      // longitude of ascending node
     incRad:   (d.inc||0) * Math.PI / 180,         // inclination
-  });
+  };
+  planets.push(planet);
 }
 
 // Capture Earth's angle0 for probe launch position calculation
@@ -2479,6 +2546,37 @@ let paused    = false;
 let trailsOn  = true;
 let orbitsOn  = true;
 let constellationsOn = true;
+const DEBUG_FLAGS = {
+  earthOrientationMarker: false,
+  earthTravelMarker: false,
+};
+
+function setEarthOrientationMarkerVisible(visible) {
+  DEBUG_FLAGS.earthOrientationMarker = !!visible;
+  for (const planet of planets) {
+    if (planet.mesh.userData.orientationMarker) {
+      planet.mesh.userData.orientationMarker.visible = DEBUG_FLAGS.earthOrientationMarker;
+    }
+  }
+}
+
+function setEarthTravelMarkerVisible(visible) {
+  DEBUG_FLAGS.earthTravelMarker = !!visible;
+  for (const planet of planets) {
+    if (planet.mesh.userData.travelMarker) {
+      planet.mesh.userData.travelMarker.visible = DEBUG_FLAGS.earthTravelMarker;
+    }
+  }
+}
+
+window.SOL_DEBUG = Object.assign(window.SOL_DEBUG || {}, {
+  flags: DEBUG_FLAGS,
+  setEarthOrientationMarkerVisible,
+  setEarthTravelMarkerVisible,
+});
+setEarthOrientationMarkerVisible(DEBUG_FLAGS.earthOrientationMarker);
+setEarthTravelMarkerVisible(DEBUG_FLAGS.earthTravelMarker);
+
 const J2000_MS = Date.UTC(2000, 0, 1, 12, 0, 0);
 const MS_PER_YEAR = 365.25 * 24 * 3600 * 1000;
 function getCurrentSimTime() {
@@ -3622,6 +3720,22 @@ const _camRight = new THREE.Vector3();
 const _camOffset = new THREE.Vector3();
 const _camLookDir = new THREE.Vector3();
 const _moonTargetWorld = new THREE.Vector3();
+const _earthTravelWorldDir = new THREE.Vector3(0, 0, 1);
+const _earthTravelLocalDir = new THREE.Vector3();
+const _earthTravelMarkerBaseDir = new THREE.Vector3(0, 0, 1);
+const _earthTravelMeshQuat = new THREE.Quaternion();
+
+function updateEarthTravelMarker(planet) {
+  const travelMarker = planet.mesh.userData.travelMarker;
+  if (!travelMarker) return;
+
+  _earthTravelLocalDir
+    .copy(_earthTravelWorldDir)
+    .applyQuaternion(planet.mesh.getWorldQuaternion(_earthTravelMeshQuat).invert())
+    .normalize();
+
+  travelMarker.quaternion.setFromUnitVectors(_earthTravelMarkerBaseDir, _earthTravelLocalDir);
+}
 
 function animate(){
   requestAnimationFrame(animate);
@@ -3669,6 +3783,7 @@ function animate(){
     p.tiltGroup.position.set(xEcl, zEcl, -yEcl); // planet position (tiltGroup moves, mesh stays at origin within)
     // Axial rotation around correctly tilted axis
     p.mesh.rotation.y = (simTime * 365.25 / p.d.rotPeriod) * Math.PI * 2;
+    if (p.mesh.userData.travelMarker) updateEarthTravelMarker(p);
     if (p.cloudMesh) {
       p.cloudMesh.rotation.y = (simTime * 365.25 / (p.d.rotPeriod * 1.08)) * Math.PI * 2;
       if (p.cloudMesh.userData.updateClouds && !paused) p.cloudMesh.userData.updateClouds(simTime, dt);
