@@ -2429,7 +2429,7 @@ const COMET_DATA = [
   { name:"67P/C-G",     sma:111,   ecc:0.641, inc:7.04,  period:6.44,   r:0.09, color:0xBBBBAA },
   { name:"Tempel 1",    sma:101,   ecc:0.517, inc:10.5,  period:5.52,   r:0.08, color:0xCCBBAA },
   { name:"Wild 2",      sma:110,   ecc:0.539, inc:3.24,  period:6.41,   r:0.08, color:0xBBCCAA },
-  { name:"Shoemaker-L9",sma:178,   ecc:0.980, inc:6.0,   period:800,    r:0.10, color:0xDDCCBB },
+  { name:"Shoemaker-Levy 9",sma:178,   ecc:0.980, inc:6.0,   period:800,    r:0.10, color:0xDDCCBB },
   { name:"NEOWISE",     sma:11424, ecc:0.9992,inc:128.9, period:6766,   r:0.11, color:0xAADDEE },
   { name:"Ikeya-Seki",  sma:2912,  ecc:0.9999,inc:141.9, period:880,    r:0.09, color:0xFFEEBB },
 ];
@@ -2442,7 +2442,7 @@ const COMET_NUCLEUS_DIAMETER_KM = {
   '67P/C-G': 4.3,
   'Tempel 1': 7.6,
   'Wild 2': 5.5,
-  'Shoemaker-L9': 2,
+  'Shoemaker-Levy 9': 2,
   NEOWISE: 5,
   'Ikeya-Seki': 5.4,
 };
