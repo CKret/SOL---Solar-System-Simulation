@@ -1780,7 +1780,7 @@ earthAngle0 = planets.find(p => p.d.name === 'EARTH').angle0;
 // r = visual radius in scene units
 const MOON_DATA = [
   // ── Earth ──────────────────────────────────────────────────────────────────
-  { planet:'EARTH',   name:'Moon',      sma:2.8,  period:0.0748,  ecc:0.055, inc:5.1,  r:0.22, color:0xAAAAAA, tidalLock:true, tidalYawDeg:-90, tidalPitchDeg:-10, tidalRollDeg:0 },
+  { planet:'EARTH',   name:'Moon',      sma:2.8,  period:0.07480263, ecc:0.055, inc:5.1,  r:0.22, color:0xAAAAAA, phaseDeg:222.49, tidalLock:true, tidalYawDeg:-90, tidalPitchDeg:-10, tidalRollDeg:0 },
 
   // ── Mars ───────────────────────────────────────────────────────────────────
   { planet:'MARS',    name:'Phobos',    sma:1.4,  period:0.000865,ecc:0.015, inc:1.1,  r:0.06, color:0x997755 },
@@ -2924,8 +2924,20 @@ setEarthTravelMarkerVisible(DEBUG_FLAGS.earthTravelMarker);
 
 const J2000_MS = Date.UTC(2000, 0, 1, 12, 0, 0);
 const MS_PER_YEAR = 365.25 * 24 * 3600 * 1000;
+const EARTH_GMST_AT_J2000_DEG = 280.46061837;
+const EARTH_GMST_DEG_PER_DAY = 360.98564736629;
 function getCurrentSimTime() {
   return (Date.now() - J2000_MS) / MS_PER_YEAR;
+}
+function getEarthRotationAngle(simT) {
+  const daysSinceJ2000 = simT * 365.25;
+  const gmstDeg = normalizeDegrees(EARTH_GMST_AT_J2000_DEG + EARTH_GMST_DEG_PER_DAY * daysSinceJ2000);
+  return THREE.MathUtils.degToRad(gmstDeg);
+}
+function getEarthCloudRotationAngle(simT, rotPeriodDays) {
+  const earthRotation = getEarthRotationAngle(simT);
+  const cloudDriftTurns = simT * 365.25 * ((1 / (rotPeriodDays * 1.08)) - (1 / rotPeriodDays));
+  return earthRotation + cloudDriftTurns * Math.PI * 2;
 }
 let simTime   = getCurrentSimTime();
 let sunZ      = 0; // galactic travel — derived after speed constants initialize, never accumulated
@@ -2950,10 +2962,24 @@ const spdEl  = document.getElementById('spd');
 const spdVal_el = document.getElementById('spd-val');
 const realtimeBtn = document.getElementById('realtime-btn');
 const realSizeBtn = document.getElementById('real-size-btn');
+const pauseBtn = document.getElementById('pause-btn');
+const nowHardpointBtn = document.querySelector('.tlhp[data-now="true"]');
 const REALTIME_SIM_SPEED = 1 / (365.25 * 24 * 3600);
 const SUN_REAL_SIZE_SCALE = getRealSizeScale(4.5, null, SUN_DIAMETER_KM);
 let realtimeMode = false;
 let realSizeMode = false;
+let followNowMode = false;
+
+function syncTimelineHardpointUi() {
+  nowHardpointBtn?.classList.toggle('now', realtimeMode && followNowMode && !paused);
+}
+
+function syncPauseUi() {
+  if (!pauseBtn) return;
+  pauseBtn.textContent = paused ? 'RESUME' : 'PAUSE';
+  pauseBtn.classList.toggle('active', paused);
+  syncTimelineHardpointUi();
+}
 
 function syncRealtimeUi() {
   if (!realtimeBtn) return;
@@ -2961,6 +2987,7 @@ function syncRealtimeUi() {
   realtimeBtn.textContent = realtimeMode ? 'REALTIME ON' : 'REALTIME';
   realtimeBtn.setAttribute('aria-pressed', realtimeMode ? 'true' : 'false');
   spdEl.disabled = realtimeMode;
+  syncTimelineHardpointUi();
 }
 
 function syncRealSizeUi() {
@@ -3007,13 +3034,16 @@ function updateSpdLabel(){
 }
 spdEl.addEventListener('input', () => {
   realtimeMode = false;
+  followNowMode = false;
   updateSpdLabel();
 });
 realtimeBtn?.addEventListener('click', () => {
   realtimeMode = !realtimeMode;
+  if (!realtimeMode) followNowMode = false;
   updateSpdLabel();
 });
 updateSpdLabel();
+syncPauseUi();
 
 function applyRealSizeMode() {
   camera.near = realSizeMode ? 0.00005 : 0.1;
@@ -3126,14 +3156,17 @@ tlEl.addEventListener('touchstart', () => { timelineDragging = true; });
 tlEl.addEventListener('mouseup',   () => { timelineDragging = false; });
 tlEl.addEventListener('touchend',  () => { timelineDragging = false; });
 tlEl.addEventListener('input', () => {
+  followNowMode = false;
   simTime = parseFloat(tlEl.value);
   sunZ = simTime * GALACTIC_SCENE_SPEED;
   updateTimelineDisplay();
+  syncTimelineHardpointUi();
 });
 
 // Step buttons: ±10, 100, 1000, 10000 years
 document.querySelectorAll('.tlstep').forEach(b => {
   b.addEventListener('click', () => {
+    followNowMode = false;
     simTime += parseFloat(b.dataset.step);
     sunZ = simTime * GALACTIC_SCENE_SPEED;
     updateTimelineDisplay();
@@ -3143,9 +3176,12 @@ document.querySelectorAll('.tlstep').forEach(b => {
 // Hard point buttons
 document.querySelectorAll('.tlhp').forEach(b => {
   b.addEventListener('click', () => {
-    simTime = b.classList.contains('now') ? getCurrentSimTime() : parseFloat(b.dataset.year);
+    const isNowButton = b.dataset.now === 'true';
+    followNowMode = isNowButton && realtimeMode;
+    simTime = isNowButton ? getCurrentSimTime() : parseFloat(b.dataset.year);
     sunZ = simTime * GALACTIC_SCENE_SPEED;
     updateTimelineDisplay();
+    syncTimelineHardpointUi();
   });
 });
 
@@ -3292,9 +3328,9 @@ document.addEventListener('webkitfullscreenchange', updateFullscreenButton);
 document.addEventListener('msfullscreenchange', updateFullscreenButton);
 updateFullscreenButton();
 
-document.getElementById('pause-btn').addEventListener('click', ()=>{
+pauseBtn?.addEventListener('click', ()=>{
   paused=!paused;
-  document.getElementById('pause-btn').textContent=paused?'RESUME':'PAUSE';
+  syncPauseUi();
 });
 document.getElementById('orbits-btn').addEventListener('click', ()=>{
   orbitsOn=!orbitsOn;
@@ -3441,6 +3477,37 @@ function getFocusTargetRadius(mesh) {
   return snapZoomForMesh(mesh, 1);
 }
 let focusTransitioning = false; // true during the snap-to animation
+const focusSelect = document.getElementById('focus-select');
+
+function syncFocusSelectValue(value = '') {
+  if (!focusSelect) return;
+  focusSelect.value = value;
+}
+
+function clickFocusButton(selector) {
+  const button = document.querySelector(selector);
+  if (button) button.click();
+}
+
+focusSelect?.addEventListener('change', () => {
+  const value = focusSelect.value;
+  if (!value) {
+    clearFocusSelection();
+    closeMobilePanels();
+    return;
+  }
+  if (value === 'sun') {
+    setFocus('sun');
+    return;
+  }
+
+  const [type, rawName] = value.split(':');
+  const name = rawName ?? '';
+  if (type === 'planet') clickFocusButton(`.fbtn[data-focus="${name}"]`);
+  else if (type === 'dwarf') clickFocusButton(`.fbtn[data-focus-dwarf="${name}"]`);
+  else if (type === 'comet') clickFocusButton(`.fbtn[data-focus-comet="${name}"]`);
+  else if (type === 'probe') clickFocusButton(`.fbtn[data-focus-probe="${name}"]`);
+});
 
 function setFocus(name) {
   const prev = focusMesh;
@@ -3462,6 +3529,7 @@ function setFocus(name) {
   document.querySelectorAll('.fbtn').forEach(b => {
     b.classList.toggle('active', b.dataset.focus === name);
   });
+  syncFocusSelectValue(name === 'sun' ? 'sun' : (name ? `planet:${name}` : ''));
   // Clear pan offset and trigger transition lerp
   userPanOffset.set(0, 0, 0);
   focusTransitioning = true;
@@ -3484,6 +3552,7 @@ document.querySelectorAll('.fbtn[data-focus-dwarf]').forEach(b => {
     document.querySelectorAll('.fbtn').forEach(x => x.classList.remove('active'));
     document.getElementById('btn-orion').classList.remove('active');
     b.classList.add('active');
+    syncFocusSelectValue(`dwarf:${b.dataset.focusDwarf}`);
     focusMesh = dw.mesh;
     userPanOffset.set(0,0,0);
     targetR = getFocusTargetRadius(focusMesh);
@@ -3502,6 +3571,7 @@ document.querySelectorAll('.fbtn[data-focus-comet]').forEach(b => {
     document.querySelectorAll('.fbtn').forEach(x => x.classList.remove('active'));
     document.getElementById('btn-orion').classList.remove('active');
     b.classList.add('active');
+    syncFocusSelectValue(`comet:${b.dataset.focusComet}`);
     focusMesh = cm.nucleus;
     userPanOffset.set(0,0,0);
     targetR = getFocusTargetRadius(focusMesh);
@@ -3520,6 +3590,7 @@ document.querySelectorAll('.fbtn[data-focus-probe]').forEach(b => {
     document.querySelectorAll('.fbtn').forEach(x => x.classList.remove('active'));
     document.getElementById('btn-orion').classList.remove('active');
     b.classList.add('active');
+    syncFocusSelectValue(`probe:${b.dataset.focusProbe}`);
     focusMesh = pr.mesh;
     userPanOffset.set(0,0,0);
     targetR = getFocusTargetRadius(focusMesh);
@@ -3823,6 +3894,12 @@ function renderInfoContent(type, obj) {
 function showInfo(type, obj) {
   focusedInfoType = type;
   focusedInfoObj = obj;
+  if (type === 'sun') syncFocusSelectValue('sun');
+  else if (type === 'planet') syncFocusSelectValue(obj ? `planet:${obj.d.name}` : '');
+  else if (type === 'dwarf') syncFocusSelectValue(obj ? `dwarf:${obj.d.name}` : '');
+  else if (type === 'comet') syncFocusSelectValue(obj ? `comet:${obj.cd.name}` : '');
+  else if (type === 'probe') syncFocusSelectValue(obj ? `probe:${obj.vd.name}` : '');
+  else syncFocusSelectValue('');
   renderInfoContent(type, obj);
   infoPanelDismissed = false;
   syncInfoPanelVisibility();
@@ -3840,6 +3917,7 @@ function clearFocusSelection() {
   lookAtSun = false;
   btnLookAtSun.classList.remove('active');
   document.querySelectorAll('.fbtn').forEach(b=>b.classList.remove('active'));
+  syncFocusSelectValue('');
   infoPanelDismissed = false;
   syncInfoPanelVisibility();
 }
@@ -4046,13 +4124,13 @@ renderer.domElement.addEventListener('click',e=>{
     return;
   }
   if(h===sunMesh){
-    if(focusMesh===sunMesh){ focusMesh=null; targetR=VIEW_DEFAULTS[viewMode].r; userPanOffset.set(0,0,0); document.querySelectorAll('.fbtn').forEach(b=>b.classList.remove('active')); infoPanelDismissed=false; syncInfoPanelVisibility(); return; }
+    if(focusMesh===sunMesh){ clearFocusSelection(); return; }
     setFocus('sun');
   } else {
     const p=planets.find(p=>p.mesh===h);
     const mn=moons.find(m=>m.moonMesh===h);
     if(p){
-      if(focusMesh===p.mesh){ focusMesh=null; targetR=VIEW_DEFAULTS[viewMode].r; userPanOffset.set(0,0,0); document.querySelectorAll('.fbtn').forEach(b=>b.classList.remove('active')); infoPanelDismissed=false; syncInfoPanelVisibility(); return; }
+      if(focusMesh===p.mesh){ clearFocusSelection(); return; }
       setFocus(p.d.name);
     } else if(mn){
       focusMesh=mn.moonMesh; userPanOffset.set(0,0,0); targetR=getFocusTargetRadius(focusMesh);
@@ -4297,10 +4375,15 @@ function animate(){
   for(const p of planets){
     getPlanetScenePositionAtTime(p, simTime, p.tiltGroup.position);
     // Axial rotation around correctly tilted axis
-    p.mesh.rotation.y = (simTime * 365.25 / p.d.rotPeriod) * Math.PI * 2;
+    const planetRotation = p.d.name === 'EARTH'
+      ? getEarthRotationAngle(simTime)
+      : (simTime * 365.25 / p.d.rotPeriod) * Math.PI * 2;
+    p.mesh.rotation.y = planetRotation;
     if (p.mesh.userData.travelMarker) updateEarthTravelMarker(p);
     if (p.cloudMesh) {
-      p.cloudMesh.rotation.y = (simTime * 365.25 / (p.d.rotPeriod * 1.08)) * Math.PI * 2;
+      p.cloudMesh.rotation.y = p.d.name === 'EARTH'
+        ? getEarthCloudRotationAngle(simTime, p.d.rotPeriod)
+        : (simTime * 365.25 / (p.d.rotPeriod * 1.08)) * Math.PI * 2;
       if (p.cloudMesh.userData.updateClouds && !paused) p.cloudMesh.userData.updateClouds(simTime, dt);
       if (p.cloudMesh.userData.cloudMeshB) {
         p.cloudMesh.userData.cloudMeshB.rotation.y = p.cloudMesh.rotation.y;
