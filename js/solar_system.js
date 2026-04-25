@@ -3141,19 +3141,35 @@ const _mousePanView = new THREE.Vector3();
 const _worldUp = new THREE.Vector3(0, 1, 0);
 
 let mouseDragDist = 0;
+function clearBrowserTextSelection() {
+  const selection = window.getSelection ? window.getSelection() : null;
+  if (selection && selection.rangeCount) selection.removeAllRanges();
+}
+function setSceneDragSelectionSuppressed(suppressed) {
+  document.body.style.userSelect = suppressed ? 'none' : '';
+  document.body.style.webkitUserSelect = suppressed ? 'none' : '';
+  if (suppressed) clearBrowserTextSelection();
+}
 renderer.domElement.addEventListener('mousedown', e=>{
   if(e.button===0)dragging=true;
   if(e.button===2)rDragging=true;
   prevX=e.clientX; prevY=e.clientY;
   mouseDragDist = 0;
   e.preventDefault();
+  setSceneDragSelectionSuppressed(true);
 });
 renderer.domElement.addEventListener('contextmenu', e=>e.preventDefault());
-window.addEventListener('mouseup', ()=>{ dragging=false; rDragging=false; });
+window.addEventListener('mouseup', ()=>{
+  dragging=false;
+  rDragging=false;
+  setSceneDragSelectionSuppressed(false);
+  clearBrowserTextSelection();
+});
 window.addEventListener('mousemove', e=>{
   const dx=e.clientX-prevX, dy=e.clientY-prevY;
   prevX=e.clientX; prevY=e.clientY;
   if(dragging){ mouseDragDist += Math.sqrt(dx*dx+dy*dy);
+    clearBrowserTextSelection();
     rotateFocusedView(dx, dy);
   }
   if(rDragging){
@@ -3186,8 +3202,13 @@ renderer.domElement.addEventListener('touchstart', e=>{
   if(e.touches.length===1){dragging=true;prevX=e.touches[0].clientX;prevY=e.touches[0].clientY;}
   if(e.touches.length===2)lastTD=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
   e.preventDefault();
+  setSceneDragSelectionSuppressed(true);
 },{passive:false});
-renderer.domElement.addEventListener('touchend',()=>{dragging=false;lastTD=null;});
+renderer.domElement.addEventListener('touchend',()=>{
+  dragging=false;
+  lastTD=null;
+  setSceneDragSelectionSuppressed(false);
+});
 renderer.domElement.addEventListener('touchmove',e=>{
   if(e.touches.length===1&&dragging){
     const dx=e.touches[0].clientX-prevX,dy=e.touches[0].clientY-prevY;
@@ -3986,6 +4007,7 @@ if (introOverlay) {
   paused = true;
 
   const revealIntroHud = () => {
+    introOverlay.style.pointerEvents = 'none';
     document.body.classList.remove('intro-active');
     window.clearTimeout(introHudTimer);
     introHudTimer = null;
