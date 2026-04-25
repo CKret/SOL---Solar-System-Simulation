@@ -2447,6 +2447,24 @@ const COMET_NUCLEUS_DIAMETER_KM = {
   'Ikeya-Seki': 5.4,
 };
 
+function getSimTimeForUtcDate(year, monthIndex, day, hour=0, minute=0, second=0) {
+  const j2000Ms = Date.UTC(2000, 0, 1, 12, 0, 0);
+  const msPerYear = 365.25 * 24 * 3600 * 1000;
+  return (Date.UTC(year, monthIndex, day, hour, minute, second) - j2000Ms) / msPerYear;
+}
+
+const COMET_END_SIM_TIME = {
+  // The first Shoemaker-Levy 9 fragments hit Jupiter on 1994-07-16, so the intact comet
+  // should no longer render or be focusable after that point in the timeline.
+  'Shoemaker-Levy 9': getSimTimeForUtcDate(1994, 6, 16, 0, 0, 0),
+};
+
+function isCometAvailableAtTime(cm, time = simTime) {
+  const cometName = cm.cd ? cm.cd.name : cm.name;
+  const endSimTime = COMET_END_SIM_TIME[cometName];
+  return endSimTime == null || time < endSimTime;
+}
+
 // Tail geometry: series of points streaming away from Sun
 const TAIL_PTS = 120;
 
@@ -2550,6 +2568,23 @@ function updateComets() {
   sunMesh.getWorldPosition(_sunWPos2);
 
   for (const cm of comets) {
+    const cometActive = isCometAvailableAtTime(cm);
+    cm.orbitLine.visible = cometActive && orbitsOn && (viewMode === 'solar');
+    if (!cometActive) {
+      cm.nucleus.visible = false;
+      cm.nucleus.userData.coma.visible = false;
+      cm.dustTail.visible = false;
+      cm.ionTail.visible = false;
+      cm.dustGeo.setDrawRange(0, 0);
+      cm.ionGeo.setDrawRange(0, 0);
+      if (focusMesh === cm.nucleus) clearFocusSelection();
+      continue;
+    }
+
+    cm.nucleus.visible = true;
+    cm.dustTail.visible = true;
+    cm.ionTail.visible = true;
+
     const M = (2*Math.PI*simTime/cm.cd.period) + cm.angle0;
     const E = keplerE(M, cm.orbitEcc);
     const lx = cm.cd.sma * Math.cos(E) - cm.c;
@@ -3509,7 +3544,14 @@ focusSelect?.addEventListener('change', () => {
   const name = rawName ?? '';
   if (type === 'planet') clickFocusButton(`.fbtn[data-focus="${name}"]`);
   else if (type === 'dwarf') clickFocusButton(`.fbtn[data-focus-dwarf="${name}"]`);
-  else if (type === 'comet') clickFocusButton(`.fbtn[data-focus-comet="${name}"]`);
+  else if (type === 'comet') {
+    const cm = comets.find(c => c.cd.name === name);
+    if (!cm || !isCometAvailableAtTime(cm)) {
+      clearFocusSelection();
+      return;
+    }
+    clickFocusButton(`.fbtn[data-focus-comet="${name}"]`);
+  }
   else if (type === 'probe') clickFocusButton(`.fbtn[data-focus-probe="${name}"]`);
 });
 
@@ -3571,7 +3613,7 @@ document.querySelectorAll('.fbtn[data-focus-dwarf]').forEach(b => {
 document.querySelectorAll('.fbtn[data-focus-comet]').forEach(b => {
   b.addEventListener('click', () => {
     const cm = comets.find(c => c.cd.name === b.dataset.focusComet);
-    if (!cm) return;
+    if (!cm || !isCometAvailableAtTime(cm)) return;
     document.querySelectorAll('.fbtn').forEach(x => x.classList.remove('active'));
     document.getElementById('btn-orion').classList.remove('active');
     b.classList.add('active');
@@ -3940,7 +3982,7 @@ infoToggleBtn?.addEventListener('click', () => {
 function getHit(cx,cy){
   m2.set((cx/window.innerWidth)*2-1, -(cy/window.innerHeight)*2+1);
   raycaster.setFromCamera(m2, camera);
-  const targets=[sunMesh,...planets.map(p=>p.mesh),...moons.map(m=>m.moonMesh),...dwarfs.map(d=>d.mesh),...comets.map(c=>c.nucleus),...probes.map(p=>p.mesh)];
+  const targets=[sunMesh,...planets.map(p=>p.mesh),...moons.map(m=>m.moonMesh),...dwarfs.map(d=>d.mesh),...comets.filter(c=>isCometAvailableAtTime(c)).map(c=>c.nucleus),...probes.map(p=>p.mesh)];
   const hits=raycaster.intersectObjects(targets, true);
   if (!hits.length) return null;
   const obj = hits[0].object;
@@ -4650,6 +4692,7 @@ animate();
 
     // Comets
     for (const cm of comets) {
+      if (!isCometAvailableAtTime(cm)) continue;
       catalog.push({ label: cm.cd.name, sub: 'Comet', color:'#aaddff', group:'COMETS',
         action: () => focusObject('comet', cm) });
     }
@@ -4701,6 +4744,7 @@ animate();
       targetR = getFocusTargetRadius(focusMesh);
       showInfo('dwarf', obj);
     } else if (type === 'comet') {
+      if (!isCometAvailableAtTime(obj)) return;
       focusMesh = obj.nucleus;
       targetR = getFocusTargetRadius(focusMesh);
       showInfo('comet', obj);
@@ -4711,7 +4755,7 @@ animate();
     }
 
     // Close search
-    input.value = '';
+    c.orbitLine.visible = isCometAvailableAtTime(c) && orbitsOn && (viewMode==='solar');
     dropdown.style.display = 'none';
     input.blur();
   }
