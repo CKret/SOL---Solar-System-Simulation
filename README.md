@@ -1,6 +1,6 @@
 # Solar System Simulator
 
-A browser-based 3D solar system and deep-time space visualizer built with Three.js. It combines planetary orbits, real star motion, dwarf planets, comets, Voyager trajectories, responsive desktop/mobile controls, and a cinematic intro overlay into a single self-contained project.
+A browser-based 3D solar system and deep-time space visualizer built with Three.js. It combines planetary orbits, present-day Earth and Moon time calibration, dwarf planets, comets, Voyager trajectories, responsive desktop/mobile controls, and a cinematic intro overlay into a single self-contained project.
 
 ## Run It
 
@@ -32,6 +32,7 @@ Project layout:
 │   ├── solar_system.js
 │   ├── voyager_trajectories.js
 │   └── three.min.js
+├── CHANGELOG.md
 ├── README.md
 ├── textures/
 │   ├── ...
@@ -66,8 +67,11 @@ No build step is required.
 - Persistent constellation name labels centered over visible constellations.
 - Hover tooltips for bright stars and nearby constellation lines.
 - Timeline scrubbing across deep time with landmark buttons such as Voyager launch and major historical or astronomical milestones.
+- Realtime mode locks the simulation to `1 s/s` and exposes a dedicated `NOW` hardpoint for live present-day viewing.
 - Simulation startup initializes from the real current UTC date and time rather than a fixed preset date.
 - Deterministic orbital positioning from simulation time rather than accumulated stepping.
+- Earth day/night rotation is anchored to Greenwich sidereal time for present-day local-time accuracy.
+- The Moon keeps a tuned tidal-lock texture orientation and a calibrated present-day orbital phase offset for more realistic realtime waxing/waning illumination.
 
 ## Tracked Objects
 
@@ -77,7 +81,7 @@ No build step is required.
 ### Views and navigation
 - `SOLAR SYSTEM` view for the standard orbital layout.
 - `VORTEX` view for the solar system's helical galactic motion.
-- Focus bar shortcuts for planets, dwarf planets, comets, and Voyager 1 / 2.
+- Desktop object selection is available from the right-side `OBJECT` dropdown, while mobile retains a dedicated Objects sheet.
 - Click-to-focus object inspection with an info panel that can be temporarily hidden without clearing focus.
 - Search box with keyboard navigation for fast lookup of objects and constellations.
 
@@ -85,10 +89,11 @@ No build step is required.
 - Full-screen cinematic intro overlay in `index.html` with stars, flare, nebula, and animated `SOL` title treatment.
 - Intro runs to completion before the main UI becomes interactive.
 - Built-in help overlay and keyboard shortcut guide, opened from the bottom-left help button.
-- Toggle buttons for trails, orbits, constellations, look-at-Sun mode, and geo lock.
+- Toggle buttons for realtime, real-size rendering, trails, orbits, constellations, look-at-Sun mode, and geo lock.
 - Orion shortcut button (`HUNTER / ORION`) for quick sky focus.
 - Responsive mobile UI with a bottom dock and dedicated Search, Objects, Time, and Controls sheets.
 - Touch-safe mobile search, panel management, and object info behavior.
+- Compact desktop timeline layout adapts for shorter viewports, including balanced time-step rows and a separate timeline button row for realtime/pause.
 - Persistent top-right fullscreen toggle button using the browser fullscreen API where supported.
 
 ## Controls
@@ -106,6 +111,11 @@ No build step is required.
 - Use the info panel's `Hide` control to dismiss it temporarily while keeping the current focus.
 - Use the top-right fullscreen button to enter or exit fullscreen on supported browsers.
 
+### Desktop UI
+- Use the right-side `OBJECT` dropdown to focus planets, dwarf planets, comets, and Voyager probes.
+- Use the timeline panel for step buttons, landmark jumps, `REALTIME`, `PAUSE`, and the live `NOW` hardpoint.
+- Use the right-side controls stack for `REAL SIZE`, orbit/trail/constellation toggles, and view-lock shortcuts.
+
 ### Keyboard
 - `/`: focus search.
 - `Space`: pause or resume time.
@@ -121,11 +131,13 @@ No build step is required.
 
 ## Notes On Accuracy
 
-- Planets, moons, dwarf planets, and comets are propagated from J2000 Keplerian elements rather than hand-authored animation paths. The simulation advances mean anomaly as $M(t)=M_0+2\pi t/P$, solves Kepler's equation $M=E-e\sin E$ with a Newton-style iterative solver, converts eccentric anomaly $E$ to true anomaly, and then rotates the orbit into 3D ecliptic space using inclination $i$, ascending node $\Omega$, and argument/longitude terms derived from the source elements.
+- Planets, moons, dwarf planets, and comets are propagated from analytical orbital elements rather than hand-authored animation paths. The simulation advances mean anomaly as $M(t)=M_0+2\pi t/P$, solves Kepler's equation $M=E-e\sin E$ with a Newton-style iterative solver, converts eccentric anomaly $E$ to true anomaly, and then rotates the orbit into 3D ecliptic space using inclination $i$, ascending node $\Omega$, and argument/longitude terms derived from the source elements.
 - Orbit shapes are true ellipses built from the semimajor axis and eccentricity, using $b=a\sqrt{1-e^2}$ for the semiminor axis and $c=ae$ for the focus offset.
+- Major planets use time-varying secular elements rather than a single frozen J2000 orbit, which improves present-day alignment and probe flyby plausibility while keeping the model analytical and usable into the future.
 - Belt and cloud particles are also given orbital parameters and periods from Kepler's third law, $P\propto a^{3/2}$, so the asteroid belt, Kuiper belt, scattered disc, and Oort cloud are orbiting populations rather than static point clouds.
 - Bright stars use catalog right ascension, declination, and proper motion in a J2000 frame. Their sky positions are advanced with linear proper-motion drift over simulation time, so constellations slowly deform across deep time instead of staying fixed.
-- Moon orientation uses explicit per-moon spin handling. Regular moons default to synchronous parent-facing rotation, Earth's Moon keeps its tuned tidal-lock presentation offsets, several irregular moons use measured sidereal spin periods, and Hyperion is treated as a chaotic rotator rather than a locked body.
+- Earth's axial rotation for present-day viewing is anchored to Greenwich sidereal time, so realtime illumination now lines up much more closely with actual UTC-based local daylight.
+- Moon orientation uses explicit per-moon spin handling. Regular moons default to synchronous parent-facing rotation, Earth's Moon keeps its tuned tidal-lock presentation offsets, several irregular moons use measured sidereal spin periods, and Hyperion is treated as a chaotic rotator rather than a locked body. The Moon's current orbital phase is also calibrated to a known new-moon epoch so realtime illumination is more plausible, while still remaining an analytical approximation rather than a full lunar ephemeris.
 - Voyager 1 and 2 do not use Keplerian approximations here. Their positions come from sampled JPL Horizons trajectory data in the Solar System Barycenter / Ecliptic J2000 frame and are played back with binary search plus linear interpolation between samples.
 
 ## Data Sources
@@ -138,16 +150,18 @@ No build step is required.
 ## Simulation Limits
 
 - This is not an $N$-body gravity integrator. Bodies are propagated independently from fixed orbital elements, so mutual perturbations, resonant drift, precession, and other long-timescale dynamical effects are not numerically integrated in real time.
+- This project intentionally stays analytical for most solar-system bodies so it can remain explorable into the deep future and deep past; outside of historically sampled spacecraft such as Voyager, it does not attempt full ephemeris playback.
 - The bright-star model uses linear proper-motion extrapolation and is clamped to about $\pm10$ million years, which is a practical approximation rather than a full galactic-dynamics solution.
 - Voyager playback is only exact within the sampled Horizons interval included in the project; outside that range the code falls back to simple linear extrapolation from the final segment.
 - The asteroid belt, Kuiper belt, scattered disc, and Oort cloud are procedural populations with randomized orbital parameters chosen to match the intended structure, not catalog-complete reconstructions of known small bodies.
 - A few small outer irregular moons in the current set still lack reliable published spin periods in the simulator data, so they are intentionally left without a claimed physically accurate spin solution instead of being assigned invented orbital-period rotation.
 - Background stars, visual glow effects, and several atmospheric or storm-style surface effects are artistic or procedural layers added for presentation rather than strict scientific reconstruction.
-- Distances follow the simulator's AU-to-scene conversion, but body radii, line thicknesses, trail density, and other render-scale choices are adjusted for legibility and interaction instead of strict one-to-one physical scale.
+- Distances follow the simulator's AU-to-scene conversion, but body radii, line thicknesses, trail density, and other render-scale choices are adjusted for legibility and interaction instead of strict one-to-one physical scale. `REAL SIZE` reduces that exaggeration substantially, but camera floors and interaction radii still include pragmatic visual compromises.
 
 ## Main Files
 
 - `index.html`: app shell, UI, intro overlay, and CSS.
+- `CHANGELOG.md`: project history summarized from git commit messages.
 - `js/solar_system.js`: simulation logic, orbital math, input handling, stars, search, mobile UI wiring, and main scene behavior.
 - `js/voyager_trajectories.js`: extracted Voyager trajectory dataset and playback helpers exposed to the main script.
 - `js/three.min.js`: Three.js runtime.
