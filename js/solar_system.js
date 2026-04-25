@@ -1772,6 +1772,7 @@ self.onmessage=function(e){
 
 // Capture Earth's angle0 for probe launch position calculation
 earthAngle0 = planets.find(p => p.d.name === 'EARTH').angle0;
+const jupiterPlanet = planets.find(p => p.d.name === 'JUPITER');
 // With correct J2000 positions, Voyager JPL data aligns directly — no rotation needed.
 
 // ── Moon data ─────────────────────────────────────────────────────────────────
@@ -2459,10 +2460,28 @@ const COMET_END_SIM_TIME = {
   'Shoemaker-Levy 9': getSimTimeForUtcDate(1994, 6, 16, 0, 0, 0),
 };
 
+const COMET_APPROACH_START_SIM_TIME = {
+  // SL9 was captured by Jupiter after its July 1992 encounter, so pull it onto a
+  // Jupiter-centric terminal approach from that point onward instead of leaving it
+  // on the generic synthetic heliocentric track.
+  'Shoemaker-Levy 9': getSimTimeForUtcDate(1992, 6, 8, 0, 0, 0),
+};
+
 function isCometAvailableAtTime(cm, time = simTime) {
   const cometName = cm.cd ? cm.cd.name : cm.name;
   const endSimTime = COMET_END_SIM_TIME[cometName];
   return endSimTime == null || time < endSimTime;
+}
+
+function isCometOnTerminalApproach(cm, time = simTime) {
+  const cometName = cm.cd ? cm.cd.name : cm.name;
+  const startSimTime = COMET_APPROACH_START_SIM_TIME[cometName];
+  const endSimTime = COMET_END_SIM_TIME[cometName];
+  return startSimTime != null && endSimTime != null && time >= startSimTime && time < endSimTime;
+}
+
+function isCometOrbitVisibleAtTime(cm, time = simTime) {
+  return isCometAvailableAtTime(cm, time) && !isCometOnTerminalApproach(cm, time);
 }
 
 // Tail geometry: series of points streaming away from Sun
@@ -2564,12 +2583,47 @@ const _cometToSun = new THREE.Vector3();
 const _cometAwayFromSun = new THREE.Vector3();
 const _cometTailRight = new THREE.Vector3();
 const _cometTailUp = new THREE.Vector3();
+const _cometBasePos = new THREE.Vector3();
+const _jupiterPos = new THREE.Vector3();
+const _jupiterPosWorld = new THREE.Vector3();
+const _jupiterPosLocal = new THREE.Vector3();
+const _sl9ApproachDir = new THREE.Vector3();
+
+function getCometLocalPosition(cm, timeYears, out = new THREE.Vector3()) {
+  const M = (2 * Math.PI * timeYears / cm.cd.period) + cm.angle0;
+  const E = keplerE(M, cm.orbitEcc);
+  const lx = cm.cd.sma * Math.cos(E) - cm.c;
+  const lz = cm.b * Math.sin(E);
+  out.set(lx, 0, lz);
+
+  if (cm.cd.name !== 'Shoemaker-Levy 9' || !jupiterPlanet || !isCometOnTerminalApproach(cm, timeYears)) {
+    return out;
+  }
+
+  const startSimTime = COMET_APPROACH_START_SIM_TIME[cm.cd.name];
+  const endSimTime = COMET_END_SIM_TIME[cm.cd.name];
+  const t = THREE.MathUtils.clamp((timeYears - startSimTime) / Math.max(1e-9, endSimTime - startSimTime), 0, 1);
+  const terminalBlend = THREE.MathUtils.clamp((t - 0.84) / 0.16, 0, 1);
+  const eased = terminalBlend * terminalBlend * (3 - 2 * terminalBlend);
+  getPlanetScenePositionAtTime(jupiterPlanet, timeYears, _jupiterPos);
+  _jupiterPosWorld.copy(_jupiterPos);
+  solarPivot.localToWorld(_jupiterPosWorld);
+  _jupiterPosLocal.copy(_jupiterPosWorld);
+  cm.incGrp.worldToLocal(_jupiterPosLocal);
+  _sl9ApproachDir.copy(out).sub(_jupiterPosLocal);
+  const baseDistance = Math.max(_sl9ApproachDir.length(), jupiterPlanet.d.r * 1.05);
+  if (_sl9ApproachDir.lengthSq() < 1e-10) _sl9ApproachDir.set(1, 0, 0);
+  else _sl9ApproachDir.normalize();
+  const approachRadius = baseDistance * (1 - eased);
+  return out.copy(_jupiterPosLocal).addScaledVector(_sl9ApproachDir, approachRadius);
+}
+
 function updateComets() {
   sunMesh.getWorldPosition(_sunWPos2);
 
   for (const cm of comets) {
     const cometActive = isCometAvailableAtTime(cm);
-    cm.orbitLine.visible = cometActive && orbitsOn && (viewMode === 'solar');
+    cm.orbitLine.visible = isCometOrbitVisibleAtTime(cm) && orbitsOn && (viewMode === 'solar');
     if (!cometActive) {
       cm.nucleus.visible = false;
       cm.nucleus.userData.coma.visible = false;
@@ -2585,11 +2639,8 @@ function updateComets() {
     cm.dustTail.visible = true;
     cm.ionTail.visible = true;
 
-    const M = (2*Math.PI*simTime/cm.cd.period) + cm.angle0;
-    const E = keplerE(M, cm.orbitEcc);
-    const lx = cm.cd.sma * Math.cos(E) - cm.c;
-    const lz = cm.b * Math.sin(E);
-    cm.nucleus.position.set(lx, 0, lz);
+    getCometLocalPosition(cm, simTime, _cometBasePos);
+    cm.nucleus.position.copy(_cometBasePos);
     // Get world position of nucleus
     cm.nucleus.getWorldPosition(_cometWPos);
 
