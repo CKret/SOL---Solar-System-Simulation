@@ -99,6 +99,26 @@ Available endpoints:
 - `GET /api/ephemeris/{bodyId}?startUtc=2026-01-01T00:00:00Z&endUtc=2026-01-02T00:00:00Z&limit=1440`
 - `GET /api/ephemeris/by-slug/{slug}?startUtc=2026-01-01T00:00:00Z&endUtc=2026-01-02T00:00:00Z&limit=1440`
 
+To seed `dbo.CelestialBodies` from authoritative sources using the write-capable SQL login stored in user-secrets:
+
+```bash
+dotnet run --project backend/Sol.Api -- import-bodies
+```
+
+That import now fetches solar-system body metadata directly from JPL Horizons and the JPL Small-Body Database. The active import set includes the current sim body catalog baseline (Sun, the eight planets, 65 moons including Charon, nine dwarf planets / TNOs, ten comets, and Voyager 1/2) plus explicitly modeled fragment bodies where we want to preserve fragment identity, such as Shoemaker-Levy 9 fragments. Any rows not present in the authoritative import set are marked inactive so the API does not continue serving stale frontend-derived entries.
+
+Fragments are modeled as normal bodies with their own slugs and ephemerides, typically parented to the source body through `ParentBodyId`. That keeps fragment handling compatible with the same catalog and sample-import pipeline used for moons and other child bodies.
+
+To import ephemeris samples for the active catalog over a UTC date range:
+
+```bash
+dotnet run --project backend/Sol.Api -- import-samples 2024-12-30T00:00:00Z 2025-01-03T00:00:00Z daily
+```
+
+The `import-samples` command takes three time parameters: `startUtc`, `endUtc`, and `sampleRate`. `sampleRate` may be `auto`, `default`, `hourly`, `daily`, `<n>h`, or `<n>d`. If omitted, the importer uses the body-specific default rate policy. The current policy sets a daily base rate for every current body, and Voyager 1 and 2 additionally fetch hourly samples during the Jupiter, Saturn, Uranus, and Neptune encounter windows so flyby periods are captured at higher resolution.
+
+Imports do not delete the whole `dbo.EphemerisSamples` table. They only replace rows for the imported bodies inside the requested time window.
+
 For IIS hosting, publish the ASP.NET Core app and configure the IIS site or application to point at the published output. SQL Server can remain on the same host; the API uses the normal SQL Server connection string and does not require SQLite or any embedded database.
 
 ## Current Feature Set
