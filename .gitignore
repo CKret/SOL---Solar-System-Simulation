@@ -1,5 +1,37 @@
+# Visual Studio / Rider
 .vs/
-backend/**/bin/
-backend/**/obj/
+.idea/
 *.user
 *.suo
+*.userosscache
+*.userprefs
+*.pidb
+
+# Build output
+backend/**/bin/
+backend/**/obj/
+
+# NuGet
+*.nupkg
+*.snupkg
+**/packages/
+!**/packages/build/
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# .NET publish output
+**/publish/
+
+# Runtime / temp
+*.log
+*.err
+*.tmp
+*.cache
+
+# User secrets (never commit)
+**/secrets.json
+
+# OS
+.DS_Store
+Thumbs.db
