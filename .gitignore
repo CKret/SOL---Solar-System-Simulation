@@ -1,6 +1,12 @@
 # Claude Code
 .claude/
 
+# VS Code — keep launch/tasks, ignore personal settings
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/extensions.json
+
 # Visual Studio / Rider
 .vs/
 .idea/
