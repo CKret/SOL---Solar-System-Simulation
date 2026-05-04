@@ -26,12 +26,14 @@ public sealed class MpcorbImporter(HttpClient httpClient, ISqlWriteConnectionFac
         await using var gzip = new GZipStream(compressed, CompressionMode.Decompress);
 
         var table = CreateStagingTable();
+        var seenSlugs = new HashSet<string>(StringComparer.Ordinal);
         var total = 0;
 
         await foreach (var rec in JsonSerializer.DeserializeAsyncEnumerable<MpcorbJsonRecord>(gzip, JsonOpts, cancellationToken))
         {
             if (rec is null || rec.A <= 0) continue;
             if (!TryBuildRow(rec, fullCatalog, out var row)) continue;
+            if (!seenSlugs.Add(row.Slug)) continue; // skip duplicate slugs
             AddRowToTable(table, row);
             total++;
             if (total % 5000 == 0)
@@ -200,9 +202,9 @@ public sealed class MpcorbImporter(HttpClient httpClient, ISqlWriteConnectionFac
 
         const string createStage = @"
             CREATE TABLE #mpc_stage (
-                Slug                 NVARCHAR(128) NOT NULL,
-                DisplayName          NVARCHAR(256) NOT NULL,
-                Kind                 NVARCHAR(32)  NOT NULL,
+                Slug                 NVARCHAR(128) COLLATE DATABASE_DEFAULT NOT NULL,
+                DisplayName          NVARCHAR(256) COLLATE DATABASE_DEFAULT NOT NULL,
+                Kind                 NVARCHAR(32)  COLLATE DATABASE_DEFAULT NOT NULL,
                 H_AbsMag             FLOAT NULL,
                 G_Slope              FLOAT NULL,
                 Eccentricity         FLOAT NULL,
@@ -217,8 +219,8 @@ public sealed class MpcorbImporter(HttpClient httpClient, ISqlWriteConnectionFac
                 OrbitalPeriod_days   FLOAT NULL,
                 Epoch_JD             FLOAT NULL,
                 T_Perihelion_JD      FLOAT NULL,
-                JplHorizonsId        NVARCHAR(64) NULL,
-                SbdbDesig            NVARCHAR(64) NULL,
+                JplHorizonsId        NVARCHAR(64)  COLLATE DATABASE_DEFAULT NULL,
+                SbdbDesig            NVARCHAR(64)  COLLATE DATABASE_DEFAULT NULL,
                 SortOrder            INT NOT NULL
             );";
         await using (var cmd = new SqlCommand(createStage, connection))
@@ -233,7 +235,7 @@ public sealed class MpcorbImporter(HttpClient httpClient, ISqlWriteConnectionFac
 
         Console.WriteLine("Staging loaded. Running MERGE...");
 
-        // Default epoch coverage for NEAs: 1900-Jan-01 to 2200-Jan-01 (JD 2415020.5 – 2524594.5).
+        // Default epoch coverage for small bodies per JPL Horizons time_spans: 1599-Dec-10 23:59 to 2500-Dec-31 23:58.
         // COALESCE on update preserves any authoritative value already written by a JPL epoch query.
         const string merge = @"
             MERGE dbo.Bodies AS tgt
@@ -258,10 +260,10 @@ public sealed class MpcorbImporter(HttpClient httpClient, ISqlWriteConnectionFac
                 JplHorizonsId        = src.JplHorizonsId,
                 SbdbDesig            = src.SbdbDesig,
                 SortOrder            = src.SortOrder,
-                EphemerisMinJD       = COALESCE(tgt.EphemerisMinJD, 2415020.5),
-                EphemerisMaxJD       = COALESCE(tgt.EphemerisMaxJD, 2524594.5),
-                EphemerisMinStr      = COALESCE(tgt.EphemerisMinStr, '1900-Jan-01 00:00'),
-                EphemerisMaxStr      = COALESCE(tgt.EphemerisMaxStr, '2200-Jan-01 00:00'),
+                EphemerisMinJD       = COALESCE(tgt.EphemerisMinJD, 2305426.499),
+                EphemerisMaxJD       = COALESCE(tgt.EphemerisMaxJD, 2634531.499),
+                EphemerisMinStr      = COALESCE(tgt.EphemerisMinStr, '1599-Dec-10 23:59'),
+                EphemerisMaxStr      = COALESCE(tgt.EphemerisMaxStr, '2500-Dec-31 23:58'),
                 IsActive             = 1,
                 UpdatedUtc           = SYSUTCDATETIME()
             WHEN NOT MATCHED BY TARGET THEN INSERT (
@@ -279,7 +281,7 @@ public sealed class MpcorbImporter(HttpClient httpClient, ISqlWriteConnectionFac
                 src.LongAscNode_deg, src.ArgPerihelion_deg, src.SemiMajorAxis_AU,
                 src.MeanAnomaly_deg, src.MeanMotion_degPerDay, src.OrbitalPeriod_days,
                 src.Epoch_JD, src.T_Perihelion_JD, src.JplHorizonsId, src.SbdbDesig, src.SortOrder,
-                2415020.5, 2524594.5, '1900-Jan-01 00:00', '2200-Jan-01 00:00'
+                2305426.499, 2634531.499, '1599-Dec-10 23:59', '2500-Dec-31 23:58'
             )
             OUTPUT $action;";
 

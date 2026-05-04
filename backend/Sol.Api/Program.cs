@@ -45,29 +45,21 @@ if (args.Length > 0 && string.Equals(args[0], "import-mpcorb", StringComparison.
 	return;
 }
 
-if (args.Length > 0 && string.Equals(args[0], "import-mpcorb-samples", StringComparison.OrdinalIgnoreCase)) {
-	var hMax     = args.Length > 1 && double.TryParse(args[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var h) ? h : (double?)null;
-	var startUtc = args.Length > 2 ? DateTime.Parse(args[2], CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal) : new DateTime(1900, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-	var endUtc   = args.Length > 3 ? DateTime.Parse(args[3], CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal) : new DateTime(2200, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-	var step     = args.Length > 4 ? ParseSampleRate(args[4]) ?? TimeSpan.FromDays(1) : TimeSpan.FromDays(1);
-
-	using var scope = app.Services.CreateScope();
-	var importer = scope.ServiceProvider.GetRequiredService<IEphemerisSampleImporter>() as HorizonsEphemerisSampleImporter
-		?? throw new InvalidOperationException("IEphemerisSampleImporter is not HorizonsEphemerisSampleImporter.");
-	var (bodies, samples) = await importer.ImportMpcorbSamplesAsync(hMax, startUtc, endUtc, step, CancellationToken.None);
-	Console.WriteLine($"MPC ephemeris import complete. Bodies: {bodies:N0}, Samples: {samples:N0}.");
-	return;
-}
-
 if (args.Length > 0 && string.Equals(args[0], "import-samples", StringComparison.OrdinalIgnoreCase)) {
-	var startUtc = args.Length > 1 ? DateTime.Parse(args[1], CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal) : new DateTime(2024, 12, 30, 0, 0, 0, DateTimeKind.Utc);
-	var endUtc = args.Length > 2 ? DateTime.Parse(args[2], CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal) : new DateTime(2025, 1, 3, 0, 0, 0, DateTimeKind.Utc);
-	var sampleRate = args.Length > 3 ? ParseSampleRate(args[3]) : null;
+	// import-samples [h_max] [startUtc] [endUtc] [step]
+	// h_max:    H magnitude cutoff — imports bodies where H <= h_max OR H IS NULL (authoritative bodies).
+	//           Omit to import all bodies with a stored Horizons range.
+	// startUtc/endUtc: optional batch window; each body's range is clipped to its stored min/max.
+	// step:     sample rate override (e.g. "daily", "1h"). Defaults to 1 day.
+	var hMax       = args.Length > 1 && double.TryParse(args[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var h) ? h : (double?)null;
+	DateTime? startUtc = args.Length > 2 ? DateTime.Parse(args[2], CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal) : null;
+	DateTime? endUtc   = args.Length > 3 ? DateTime.Parse(args[3], CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal) : null;
+	var sampleRate     = args.Length > 4 ? ParseSampleRate(args[4]) : null;
 
 	using var scope = app.Services.CreateScope();
 	var importer = scope.ServiceProvider.GetRequiredService<IEphemerisSampleImporter>();
-	var result = await importer.ImportAsync(startUtc, endUtc, sampleRate, CancellationToken.None);
-	Console.WriteLine($"Imported ephemeris samples. Bodies: {result.BodyCount}, Samples: {result.SampleCount}, Replaced: {result.DeletedCount}.");
+	var result = await importer.ImportAsync(hMax, startUtc, endUtc, sampleRate, CancellationToken.None);
+	Console.WriteLine($"Ephemeris import complete. Bodies: {result.BodyCount:N0}, Samples: {result.SampleCount:N0}.");
 	return;
 }
 

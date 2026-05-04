@@ -2,7 +2,6 @@ using Microsoft.Data.SqlClient;
 using Sol.Api.Models;
 using System.Data;
 using System.Globalization;
-using System.Text.RegularExpressions;
 
 namespace Sol.Api.Services;
 
@@ -15,220 +14,159 @@ public sealed partial class HorizonsEphemerisSampleImporter(
   private readonly HttpClient _httpClient = httpClient;
   private readonly ISqlWriteConnectionFactory _connectionFactory = connectionFactory;
 
-  public async Task<EphemerisSampleImportResult> ImportAsync(DateTime startUtc, DateTime endUtc, TimeSpan? sampleRateOverride, CancellationToken cancellationToken)
+  // -------------------------------------------------------------------------
+  // Public interface
+  // -------------------------------------------------------------------------
+
+  public async Task<EphemerisSampleImportResult> ImportAsync(
+      double? hMax, DateTime? startUtc, DateTime? endUtc, TimeSpan? sampleRateOverride, CancellationToken cancellationToken)
   {
-    var normalizedStartUtc = DateTime.SpecifyKind(startUtc, DateTimeKind.Utc);
-    var normalizedEndUtc = DateTime.SpecifyKind(endUtc, DateTimeKind.Utc);
+    if (sampleRateOverride is not null && sampleRateOverride <= TimeSpan.Zero)
+      throw new ArgumentOutOfRangeException(nameof(sampleRateOverride));
 
-    if (normalizedEndUtc < normalizedStartUtc) {
-      throw new ArgumentException("endUtc must be greater than or equal to startUtc.");
-    }
+    double? batchStartJd = startUtc.HasValue
+      ? JulianDateConverter.FromDateTime(DateTime.SpecifyKind(startUtc.Value, DateTimeKind.Utc)) : null;
+    double? batchEndJd = endUtc.HasValue
+      ? JulianDateConverter.FromDateTime(DateTime.SpecifyKind(endUtc.Value, DateTimeKind.Utc))   : null;
 
-    if (sampleRateOverride is not null && sampleRateOverride <= TimeSpan.Zero) {
-      throw new ArgumentOutOfRangeException(nameof(sampleRateOverride), "sampleRateOverride must be greater than zero when provided.");
-    }
+    var bodies = await LoadBodiesForEphemerisAsync(hMax, cancellationToken);
+    Console.WriteLine($"Importing ephemeris for {bodies.Count:N0} bodies (hMax={hMax?.ToString() ?? "none"}, parallelism=5).");
 
-    var bodyInfoBySlug = await LoadBodyIdsAsync(cancellationToken);
-    var allSamples = new List<SampleImportRow>();
+    int totalBodies = 0, totalSamples = 0, completed = 0;
+    var step = sampleRateOverride ?? TimeSpan.FromDays(1);
 
-    foreach (var target in AuthoritativeCatalogManifest.Targets) {
-      if (!bodyInfoBySlug.TryGetValue(target.Slug, out var info)) {
-        throw new InvalidOperationException($"Active body '{target.Slug}' was not found in dbo.Bodies. Run import-bodies first.");
-      }
+    await Parallel.ForEachAsync(
+      bodies,
+      new ParallelOptions { MaxDegreeOfParallelism = 5, CancellationToken = cancellationToken },
+      async ((int BodyId, string Slug, string JplId, double MinJd, double MaxJd) body, CancellationToken ct) =>
+      {
+        var (bodyId, slug, jplId, minJd, maxJd) = body;
 
-      var horizonsCommand = info.JplHorizonsId ?? target.HorizonsCommand;
-      var samples = await GetSamplesForTargetAsync(target, info.BodyId, horizonsCommand, normalizedStartUtc, normalizedEndUtc, sampleRateOverride, cancellationToken);
-      allSamples.AddRange(samples);
-    }
+        // Clip optional batch range to what Horizons covers for this body.
+        var effectiveStart = batchStartJd.HasValue ? Math.Max(batchStartJd.Value, minJd) : minJd;
+        var effectiveEnd   = batchEndJd.HasValue   ? Math.Min(batchEndJd.Value,   maxJd) : maxJd;
+        if (effectiveStart >= effectiveEnd) {
+          Interlocked.Increment(ref completed);
+          return;
+        }
 
-    await using var connection = _connectionFactory.CreateConnection();
-    await connection.OpenAsync(cancellationToken);
-    await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
-
-    var deleted = await DeleteExistingSamplesAsync(connection, transaction, bodyInfoBySlug.Values.Select(v => v.BodyId), normalizedStartUtc, normalizedEndUtc, cancellationToken);
-    var inserted = await InsertSamplesAsync(connection, transaction, allSamples, cancellationToken);
-
-    await transaction.CommitAsync(cancellationToken);
-    return new EphemerisSampleImportResult(bodyInfoBySlug.Count, inserted, deleted);
-  }
-
-  public async Task<(int Bodies, int Samples)> ImportMpcorbSamplesAsync(
-      double? hMax, DateTime startUtc, DateTime endUtc, TimeSpan step,
-      CancellationToken cancellationToken)
-  {
-    var bodies = await LoadMpcorbBodyListAsync(hMax, cancellationToken);
-    Console.WriteLine($"Queued {bodies.Count:N0} MPC bodies for ephemeris import.");
-
-    int processedBodies = 0, totalSamples = 0;
-
-    for (var i = 0; i < bodies.Count; i++) {
-      var (bodyId, slug, jplId) = bodies[i];
-      if (string.IsNullOrWhiteSpace(jplId)) {
-        Console.WriteLine($"  [{i + 1}/{bodies.Count}] SKIP {slug}: no JplHorizonsId");
-        continue;
-      }
-
-      try {
-        var samples = await FetchMpcorbBodySamplesAsync(bodyId, slug, jplId, startUtc, endUtc, step, cancellationToken);
-
-        if (samples.Count > 0) {
+        try {
           await using var conn = _connectionFactory.CreateConnection();
-          await conn.OpenAsync(cancellationToken);
-          await using var tx = (SqlTransaction)await conn.BeginTransactionAsync(cancellationToken);
-          await DeleteExistingSamplesAsync(conn, tx, [bodyId], startUtc, endUtc, cancellationToken);
-          await InsertSamplesAsync(conn, tx, samples, cancellationToken);
-          await MarkHasEphemerisAsync(conn, tx, bodyId, cancellationToken);
-          await tx.CommitAsync(cancellationToken);
+          await conn.OpenAsync(ct);
 
-          processedBodies++;
-          totalSamples += samples.Count;
-          Console.WriteLine($"  [{i + 1}/{bodies.Count}] {slug}: {samples.Count:N0} samples");
+          int inserted = 0;
+          foreach (var window in EphemerisImportSourcePolicy.GetWindowsForTarget(slug, effectiveStart, effectiveEnd, sampleRateOverride)) {
+            int windowInserted = await ImportBodyChunksAsync(conn, bodyId, slug, jplId, window.StartJd, window.EndJd, window.Step, ct);
+            if (windowInserted > 0 && inserted == 0) {
+              await using var tx = (SqlTransaction)await conn.BeginTransactionAsync(ct);
+              await MarkHasEphemerisAsync(conn, tx, bodyId, ct);
+              await tx.CommitAsync(ct);
+            }
+            inserted += windowInserted;
+          }
+
+          // Mark body as complete if all chunks in its full stored range are now logged.
+          if (await IsRangeFullyLoggedAsync(conn, bodyId, minJd, maxJd, step, ct))
+            await SetCompletedEphemerisAsync(conn, bodyId, ct);
+
+          var n = Interlocked.Increment(ref completed);
+          if (inserted > 0) {
+            Interlocked.Increment(ref totalBodies);
+            Interlocked.Add(ref totalSamples, inserted);
+            Console.WriteLine($"  [{n}/{bodies.Count}] {slug}: +{inserted:N0} samples");
+          }
+          else if (n % 50 == 0) {
+            Console.WriteLine($"  [{n}/{bodies.Count}] {n:N0} checked");
+          }
         }
-        else {
-          Console.WriteLine($"  [{i + 1}/{bodies.Count}] SKIP {slug}: 0 samples returned");
+        catch (Exception ex) {
+          Interlocked.Increment(ref completed);
+          Console.WriteLine($"  ERROR {slug}: {ex.Message}");
         }
-      }
-      catch (Exception ex) {
-        Console.WriteLine($"  [{i + 1}/{bodies.Count}] ERROR {slug}: {ex.Message}");
-      }
+      });
 
-      await Task.Delay(300, cancellationToken);
-    }
-
-    return (processedBodies, totalSamples);
+    return new EphemerisSampleImportResult(totalBodies, totalSamples, 0);
   }
 
-  private async Task<List<(int BodyId, string Slug, string? JplId)>> LoadMpcorbBodyListAsync(
-      double? hMax, CancellationToken cancellationToken)
-  {
-    await using var conn = _connectionFactory.CreateConnection();
-    await conn.OpenAsync(cancellationToken);
+  // -------------------------------------------------------------------------
+  // Core chunk-import loop (shared by both import paths)
+  // -------------------------------------------------------------------------
 
-    var sql = "SELECT BodyId, Slug, JplHorizonsId FROM dbo.Bodies"
-            + " WHERE Source = 'mpcorb' AND IsActive = 1 AND HasEphemeris = 0"
-            + (hMax.HasValue ? " AND H_AbsMag <= @hMax" : "")
-            + " ORDER BY H_AbsMag ASC, Slug";
-
-    await using var cmd = new SqlCommand(sql, conn);
-    if (hMax.HasValue) cmd.Parameters.AddWithValue("@hMax", hMax.Value);
-    await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
-
-    var list = new List<(int, string, string?)>();
-    while (await reader.ReadAsync(cancellationToken))
-      list.Add((reader.GetInt32(0), reader.GetString(1), reader.IsDBNull(2) ? null : reader.GetString(2)));
-    return list;
-  }
-
-  // JPL Horizons rejects requests whose projected output exceeds 90,024 lines.
-  // Split the requested range into windows that each stay safely below that limit.
-  private static IEnumerable<(DateTime Start, DateTime End)> ChunkRange(DateTime start, DateTime end, TimeSpan step)
-  {
-    const int maxLinesPerRequest = 87000;
-    var windowSpan = TimeSpan.FromTicks((long)(maxLinesPerRequest * step.Ticks));
-    var windowStart = start;
-    while (windowStart < end) {
-      var windowEnd = windowStart + windowSpan;
-      if (windowEnd > end) windowEnd = end;
-      yield return (windowStart, windowEnd);
-      // Advance by step so the boundary date is only included once (in the window that ends on it).
-      windowStart = windowEnd + step;
-    }
-  }
-
-  private async Task<IReadOnlyList<SampleImportRow>> FetchMpcorbBodySamplesAsync(
+  // Iterates chunks within [startJd, endJd], skipping any already logged.
+  // Fetches each missing chunk from Horizons, inserts new samples (WHERE NOT
+  // EXISTS), and writes a log entry regardless of whether data was returned.
+  // HTTP errors are not logged so they are retried on the next run.
+  private async Task<int> ImportBodyChunksAsync(
+      SqlConnection conn,
       int bodyId, string slug, string horizonsCommand,
-      DateTime startUtc, DateTime endUtc, TimeSpan step,
-      CancellationToken cancellationToken)
+      double startJd, double endJd, TimeSpan step,
+      CancellationToken ct)
   {
-    var allSamples = new List<SampleImportRow>();
+    var loggedChunks = await LoadLoggedChunksAsync(conn, bodyId, startJd, endJd, ct);
+    int totalInserted = 0;
 
-    foreach (var (winStart, winEnd) in ChunkRange(startUtc, endUtc, step)) {
+    foreach (var (winStart, winEnd) in ChunkRange(startJd, endJd, step)) {
+      if (loggedChunks.Contains((winStart, winEnd))) continue;
+
       var requestUri = BuildHorizonsVectorsUri(horizonsCommand, winStart, winEnd, step);
-      using var response = await _httpClient.GetAsync(requestUri, cancellationToken);
+      using var response = await _httpClient.GetAsync(requestUri, ct);
+
       if (!response.IsSuccessStatusCode)
-        return allSamples;
+        continue; // transient error — do not log, allow retry
 
-      await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-      using var doc = await System.Text.Json.JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+      await using var stream = await response.Content.ReadAsStreamAsync(ct);
+      using var doc = await System.Text.Json.JsonDocument.ParseAsync(stream, cancellationToken: ct);
 
-      if (!doc.RootElement.TryGetProperty("result", out var resultEl))
-        return allSamples;
-
-      var resultText = resultEl.GetString();
-      if (string.IsNullOrEmpty(resultText))
-        return allSamples;
-
-      // No $$SOE means JPL returned an error (ambiguous body, not found, etc.) — stop.
-      if (!resultText.Contains("$$SOE"))
-        return allSamples;
-
-      allSamples.AddRange(ParseHorizonsVectorCsv(bodyId, resultText, slug));
-
-      if (winEnd < endUtc)
-        await Task.Delay(150, cancellationToken);
-    }
-    // Deduplicate on timestamp in case window boundaries produced any overlap.
-    return allSamples
-      .GroupBy(s => s.SampleTimeUtc)
-      .Select(g => g.First())
-      .OrderBy(s => s.SampleTimeUtc)
-      .ToList();
-  }
-
-  private static async Task MarkHasEphemerisAsync(
-      SqlConnection conn, SqlTransaction tx, int bodyId, CancellationToken cancellationToken)
-  {
-    const string sql = "UPDATE dbo.Bodies SET HasEphemeris = 1, UpdatedUtc = SYSUTCDATETIME() WHERE BodyId = @id;";
-    await using var cmd = new SqlCommand(sql, conn, tx);
-    cmd.Parameters.AddWithValue("@id", bodyId);
-    await cmd.ExecuteNonQueryAsync(cancellationToken);
-  }
-
-  private async Task<Dictionary<string, (int BodyId, string? JplHorizonsId)>> LoadBodyIdsAsync(CancellationToken cancellationToken)
-  {
-    await using var connection = _connectionFactory.CreateConnection();
-    await connection.OpenAsync(cancellationToken);
-    const string sql = "SELECT BodyId, Slug, JplHorizonsId FROM dbo.Bodies WHERE IsActive = 1;";
-    await using var command = new SqlCommand(sql, connection);
-    await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-
-    var result = new Dictionary<string, (int BodyId, string? JplHorizonsId)>(StringComparer.OrdinalIgnoreCase);
-    while (await reader.ReadAsync(cancellationToken)) {
-      result[reader.GetString(1)] = (reader.GetInt32(0), reader.IsDBNull(2) ? null : reader.GetString(2));
-    }
-
-    return result;
-  }
-
-  private async Task<IReadOnlyList<SampleImportRow>> GetSamplesForTargetAsync(AuthoritativeCatalogTarget target, int bodyId, string? horizonsCommand, DateTime startUtc, DateTime endUtc, TimeSpan? sampleRateOverride, CancellationToken cancellationToken)
-  {
-    var samples = new Dictionary<DateTime, SampleImportRow>();
-
-    foreach (var window in EphemerisImportSourcePolicy.GetWindowsForTarget(target.Slug, startUtc, endUtc, sampleRateOverride)) {
-      foreach (var sample in await FetchHorizonsSamplesAsync(target, bodyId, horizonsCommand, window.StartUtc, window.EndUtc, window.Step, cancellationToken)) {
-        samples[sample.SampleTimeUtc] = sample;
+      int inserted = 0;
+      if (doc.RootElement.TryGetProperty("result", out var resultEl)) {
+        var resultText = resultEl.GetString();
+        if (!string.IsNullOrEmpty(resultText) && resultText.Contains("$$SOE")) {
+          var samples = ParseHorizonsVectorCsv(bodyId, resultText, slug);
+          if (samples.Count > 0)
+            inserted = await InsertSamplesAsync(conn, samples, ct);
+        }
       }
+
+      // Log every attempted chunk within the valid range (0 samples = Horizons
+      // confirmed no data here, so we won't retry).
+      await LogChunkAsync(conn, bodyId, winStart, winEnd, inserted, ct);
+      totalInserted += inserted;
+
+      if (winEnd < endJd)
+        await Task.Delay(150, ct);
     }
 
-    return samples.Values.OrderBy(sample => sample.SampleTimeUtc).ToArray();
+    return totalInserted;
   }
 
-  private async Task<IReadOnlyList<SampleImportRow>> FetchHorizonsSamplesAsync(AuthoritativeCatalogTarget target, int bodyId, string? horizonsCommand, DateTime startUtc, DateTime endUtc, TimeSpan step, CancellationToken cancellationToken)
+  // -------------------------------------------------------------------------
+  // Horizons API helpers
+  // -------------------------------------------------------------------------
+
+  private static IEnumerable<(double Start, double End)> ChunkRange(double startJd, double endJd, TimeSpan step)
   {
-    if (string.IsNullOrWhiteSpace(horizonsCommand)) {
-      throw new InvalidOperationException($"Target '{target.Slug}' has no JplHorizonsId in dbo.Bodies. Run import-bodies first.");
+    const int maxLinesPerRequest = 18250; // ~50 years at 1-day step
+    double windowDays = maxLinesPerRequest * step.TotalDays;
+    double windowStart = startJd;
+    while (windowStart < endJd) {
+      double windowEnd = Math.Min(windowStart + windowDays, endJd);
+      yield return (windowStart, windowEnd);
+      windowStart = windowEnd + step.TotalDays;
     }
+  }
 
-    var requestUri = BuildHorizonsVectorsUri(horizonsCommand, startUtc, endUtc, step);
-    using var response = await _httpClient.GetAsync(requestUri, cancellationToken);
-    response.EnsureSuccessStatusCode();
+  private static string BuildHorizonsVectorsUri(string command, double startJd, double endJd, TimeSpan step)
+  {
+    var quotedCommand = Uri.EscapeDataString($"'{command}'");
+    var quotedStart   = Uri.EscapeDataString($"'{JulianDateConverter.ToHorizonsDateString(startJd)}'");
+    var quotedEnd     = Uri.EscapeDataString($"'{JulianDateConverter.ToHorizonsDateString(endJd)}'");
+    var stepHours     = Math.Max(1, (int)Math.Round(step.TotalHours, MidpointRounding.AwayFromZero));
+    var quotedStep    = Uri.EscapeDataString($"'{stepHours} h'");
 
-    await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-    using var document = await System.Text.Json.JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-    var resultText = document.RootElement.GetProperty("result").GetString()
-      ?? throw new InvalidOperationException($"Horizons vectors response did not include result text for '{target.Slug}'.");
-
-    return ParseHorizonsVectorCsv(bodyId, resultText, target.Slug);
+    return $"{HorizonsApiBase}?format=json&COMMAND={quotedCommand}&OBJ_DATA='NO'&MAKE_EPHEM='YES'" +
+           $"&EPHEM_TYPE='VECTORS'&CENTER='500@0'&REF_PLANE='ECLIPTIC'&REF_SYSTEM='ICRF'" +
+           $"&OUT_UNITS='AU-D'&TIME_TYPE='UT'&START_TIME={quotedStart}&STOP_TIME={quotedEnd}" +
+           $"&STEP_SIZE={quotedStep}&VEC_TABLE='2'&CSV_FORMAT='YES'";
   }
 
   private static IReadOnlyList<SampleImportRow> ParseHorizonsVectorCsv(int bodyId, string resultText, string slug)
@@ -238,34 +176,23 @@ public sealed partial class HorizonsEphemerisSampleImporter(
 
     foreach (var rawLine in resultText.Split('\n')) {
       var line = rawLine.Trim();
-      if (line == "$$SOE") {
-        inRows = true;
-        continue;
-      }
+      if (line == "$$SOE") { inRows = true;  continue; }
+      if (line == "$$EOE") { break; }
+      if (!inRows || string.IsNullOrWhiteSpace(line)) continue;
 
-      if (line == "$$EOE") {
-        break;
-      }
-
-      if (!inRows || string.IsNullOrWhiteSpace(line)) {
-        continue;
-      }
-
-      var columns = line.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-      if (columns.Length < 8) {
+      var cols = line.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+      if (cols.Length < 8)
         throw new InvalidOperationException($"Unexpected Horizons CSV row for '{slug}': {line}");
-      }
 
-      var parsedTime = DateTime.ParseExact(columns[1], "A.D. yyyy-MMM-dd HH:mm:ss.ffff", CultureInfo.InvariantCulture, DateTimeStyles.None);
       rows.Add(new SampleImportRow(
         bodyId,
-        DateTime.SpecifyKind(parsedTime, DateTimeKind.Utc),
-        double.Parse(columns[2], NumberStyles.Float, CultureInfo.InvariantCulture),
-        double.Parse(columns[3], NumberStyles.Float, CultureInfo.InvariantCulture),
-        double.Parse(columns[4], NumberStyles.Float, CultureInfo.InvariantCulture),
-        double.Parse(columns[5], NumberStyles.Float, CultureInfo.InvariantCulture),
-        double.Parse(columns[6], NumberStyles.Float, CultureInfo.InvariantCulture),
-        double.Parse(columns[7], NumberStyles.Float, CultureInfo.InvariantCulture),
+        JulianDateConverter.ParseHorizonsTimestamp(cols[1]),
+        double.Parse(cols[2], NumberStyles.Float, CultureInfo.InvariantCulture),
+        double.Parse(cols[3], NumberStyles.Float, CultureInfo.InvariantCulture),
+        double.Parse(cols[4], NumberStyles.Float, CultureInfo.InvariantCulture),
+        double.Parse(cols[5], NumberStyles.Float, CultureInfo.InvariantCulture),
+        double.Parse(cols[6], NumberStyles.Float, CultureInfo.InvariantCulture),
+        double.Parse(cols[7], NumberStyles.Float, CultureInfo.InvariantCulture),
         "Ecliptic J2000 / Solar System Barycenter",
         "JPL Horizons API"));
     }
@@ -273,108 +200,199 @@ public sealed partial class HorizonsEphemerisSampleImporter(
     return rows;
   }
 
-  private static string BuildHorizonsVectorsUri(string command, DateTime startUtc, DateTime endUtc, TimeSpan step)
-  {
-    var quotedCommand = Uri.EscapeDataString($"'{command}'");
-    var quotedStart = Uri.EscapeDataString($"'{startUtc:yyyy-MM-dd HH:mm}'");
-    var quotedEnd = Uri.EscapeDataString($"'{endUtc:yyyy-MM-dd HH:mm}'");
-    var stepHours = Math.Max(1, (int)Math.Round(step.TotalHours, MidpointRounding.AwayFromZero));
-    var quotedStep = Uri.EscapeDataString($"'{stepHours} h'");
+  // -------------------------------------------------------------------------
+  // Database helpers
+  // -------------------------------------------------------------------------
 
-    return $"{HorizonsApiBase}?format=json&COMMAND={quotedCommand}&OBJ_DATA='NO'&MAKE_EPHEM='YES'&EPHEM_TYPE='VECTORS'&CENTER='500@0'&REF_PLANE='ECLIPTIC'&REF_SYSTEM='ICRF'&OUT_UNITS='AU-D'&TIME_TYPE='UT'&START_TIME={quotedStart}&STOP_TIME={quotedEnd}&STEP_SIZE={quotedStep}&VEC_TABLE='2'&CSV_FORMAT='YES'";
+  private async Task<List<(int BodyId, string Slug, string JplId, double MinJd, double MaxJd)>>
+      LoadBodiesForEphemerisAsync(double? hMax, CancellationToken ct)
+  {
+    await using var conn = _connectionFactory.CreateConnection();
+    await conn.OpenAsync(ct);
+
+    // Include bodies with no H magnitude (authoritative bodies: planets, comets, probes)
+    // and bodies bright enough to pass the h_max cutoff.
+    // Require JplHorizonsId and stored epoch range so we know how to query Horizons.
+    var sql = @"
+SELECT BodyId, Slug, JplHorizonsId, EphemerisMinJD, EphemerisMaxJD
+FROM dbo.Bodies
+WHERE IsActive = 1
+  AND CompletedEphemeris = 0
+  AND JplHorizonsId IS NOT NULL
+  AND EphemerisMinJD IS NOT NULL
+  AND EphemerisMaxJD IS NOT NULL
+  AND (H_AbsMag IS NULL" + (hMax.HasValue ? " OR H_AbsMag <= @hMax" : "") + @")
+ORDER BY H_AbsMag ASC, Slug;";
+
+    await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 0 };
+    if (hMax.HasValue) cmd.Parameters.AddWithValue("@hMax", hMax.Value);
+    await using var reader = await cmd.ExecuteReaderAsync(ct);
+
+    var list = new List<(int, string, string, double, double)>();
+    while (await reader.ReadAsync(ct))
+      list.Add((reader.GetInt32(0), reader.GetString(1), reader.GetString(2), reader.GetDouble(3), reader.GetDouble(4)));
+    return list;
   }
 
-  private static async Task<int> DeleteExistingSamplesAsync(SqlConnection connection, SqlTransaction transaction, IEnumerable<int> bodyIds, DateTime startUtc, DateTime endUtc, CancellationToken cancellationToken)
+  private static async Task<HashSet<(double, double)>> LoadLoggedChunksAsync(
+      SqlConnection conn, int bodyId, double startJd, double endJd, CancellationToken ct)
   {
-	var bodyIdList = string.Join(',', bodyIds.Distinct().OrderBy(bodyId => bodyId));
-	if (string.IsNullOrWhiteSpace(bodyIdList)) {
-		return 0;
-	}
+    const string sql = @"
+SELECT StartJd, EndJd FROM dbo.EphemerisImportLog
+WHERE BodyId = @bodyId AND StartJd >= @startJd AND EndJd <= @endJd;";
+
+    await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 0 };
+    cmd.Parameters.AddWithValue("@bodyId",  bodyId);
+    cmd.Parameters.AddWithValue("@startJd", startJd);
+    cmd.Parameters.AddWithValue("@endJd",   endJd);
+    await using var reader = await cmd.ExecuteReaderAsync(ct);
+
+    var result = new HashSet<(double, double)>();
+    while (await reader.ReadAsync(ct))
+      result.Add((reader.GetDouble(0), reader.GetDouble(1)));
+    return result;
+  }
+
+  private static async Task LogChunkAsync(
+      SqlConnection conn, int bodyId, double startJd, double endJd, int sampleCount, CancellationToken ct)
+  {
+    // IF NOT EXISTS prevents duplicate log entries (e.g. from parallel runs).
+    const string sql = @"
+IF NOT EXISTS (SELECT 1 FROM dbo.EphemerisImportLog WHERE BodyId = @bodyId AND StartJd = @startJd AND EndJd = @endJd)
+    INSERT INTO dbo.EphemerisImportLog (BodyId, StartJd, EndJd, SampleCount)
+    VALUES (@bodyId, @startJd, @endJd, @sampleCount);";
+
+    await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 0 };
+    cmd.Parameters.AddWithValue("@bodyId",      bodyId);
+    cmd.Parameters.AddWithValue("@startJd",     startJd);
+    cmd.Parameters.AddWithValue("@endJd",       endJd);
+    cmd.Parameters.AddWithValue("@sampleCount", sampleCount);
+    await cmd.ExecuteNonQueryAsync(ct);
+  }
+
+  private static async Task<bool> IsRangeFullyLoggedAsync(
+      SqlConnection conn, int bodyId, double minJd, double maxJd, TimeSpan step, CancellationToken ct)
+  {
+    int expectedCount = ChunkRange(minJd, maxJd, step).Count();
 
     const string sql = @"
-DELETE FROM dbo.EphemerisSamples
-WHERE BodyId IN (
-	SELECT TRY_CAST(value AS INT)
-	FROM string_split(@bodyIds, ',')
-)
-	AND SampleTimeUtc >= @startUtc
-	AND SampleTimeUtc <= @endUtc;";
+SELECT COUNT(*) FROM dbo.EphemerisImportLog
+WHERE BodyId = @bodyId AND StartJd >= @minJd AND EndJd <= @maxJd;";
 
-    await using var command = new SqlCommand(sql, connection, transaction);
-	command.Parameters.AddWithValue("@bodyIds", bodyIdList);
-    command.Parameters.AddWithValue("@startUtc", startUtc);
-    command.Parameters.AddWithValue("@endUtc", endUtc);
-    return await command.ExecuteNonQueryAsync(cancellationToken);
+    await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 0 };
+    cmd.Parameters.AddWithValue("@bodyId", bodyId);
+    cmd.Parameters.AddWithValue("@minJd",  minJd);
+    cmd.Parameters.AddWithValue("@maxJd",  maxJd);
+    int loggedCount = Convert.ToInt32(await cmd.ExecuteScalarAsync(ct));
+    return loggedCount >= expectedCount;
   }
 
-  private static async Task<int> InsertSamplesAsync(SqlConnection connection, SqlTransaction transaction, IReadOnlyList<SampleImportRow> samples, CancellationToken cancellationToken)
+  private static async Task SetCompletedEphemerisAsync(
+      SqlConnection conn, int bodyId, CancellationToken ct)
   {
-    if (samples.Count == 0) {
-      return 0;
-    }
+    const string sql = "UPDATE dbo.Bodies SET CompletedEphemeris = 1, UpdatedUtc = SYSUTCDATETIME() WHERE BodyId = @id;";
+    await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 0 };
+    cmd.Parameters.AddWithValue("@id", bodyId);
+    await cmd.ExecuteNonQueryAsync(ct);
+  }
 
+  private static async Task MarkHasEphemerisAsync(
+      SqlConnection conn, SqlTransaction tx, int bodyId, CancellationToken ct)
+  {
+    const string sql = "UPDATE dbo.Bodies SET HasEphemeris = 1, UpdatedUtc = SYSUTCDATETIME() WHERE BodyId = @id;";
+    await using var cmd = new SqlCommand(sql, conn, tx) { CommandTimeout = 0 };
+    cmd.Parameters.AddWithValue("@id", bodyId);
+    await cmd.ExecuteNonQueryAsync(ct);
+  }
+
+  // Bulk-loads samples into a connection-local staging table then inserts rows
+  // that don't already exist in dbo.EphemerisSamples (by BodyId + SampleJd).
+  // Manages its own transaction; the staging table is dropped implicitly when
+  // the connection closes.
+  private static async Task<int> InsertSamplesAsync(
+      SqlConnection conn, IReadOnlyList<SampleImportRow> samples, CancellationToken ct)
+  {
+    if (samples.Count == 0) return 0;
+
+    // Drop and recreate the staging table (idempotent within this connection).
+    const string createStaging = @"
+IF OBJECT_ID('tempdb..#EphemerisStaging') IS NOT NULL DROP TABLE #EphemerisStaging;
+CREATE TABLE #EphemerisStaging (
+    BodyId      INT           NOT NULL,
+    SampleJd    FLOAT         NOT NULL,
+    X_AU        FLOAT         NOT NULL,
+    Y_AU        FLOAT         NOT NULL,
+    Z_AU        FLOAT         NOT NULL,
+    VX_AUPerDay FLOAT         NOT NULL,
+    VY_AUPerDay FLOAT         NOT NULL,
+    VZ_AUPerDay FLOAT         NOT NULL,
+    Frame       NVARCHAR(256) COLLATE DATABASE_DEFAULT NULL,
+    Source      NVARCHAR(128) COLLATE DATABASE_DEFAULT NULL
+);";
+    await using (var createCmd = new SqlCommand(createStaging, conn))
+      await createCmd.ExecuteNonQueryAsync(ct);
+
+    // Bulk-load into the staging table (outside any transaction).
     var table = CreateSampleDataTable();
-    foreach (var sample in samples) {
-      table.Rows.Add(
-        sample.BodyId,
-        sample.SampleTimeUtc,
-        sample.X,
-        sample.Y,
-        sample.Z,
-        sample.Vx,
-        sample.Vy,
-        sample.Vz,
-        sample.Frame,
-        sample.Source);
+    foreach (var s in samples)
+      table.Rows.Add(s.BodyId, s.SampleJd, s.X, s.Y, s.Z, s.Vx, s.Vy, s.Vz, s.Frame, s.Source);
+
+    using (var bulk = new SqlBulkCopy(conn, SqlBulkCopyOptions.Default, null) {
+      DestinationTableName = "#EphemerisStaging",
+      BulkCopyTimeout = 0
+    }) {
+      bulk.ColumnMappings.Add("BodyId",      "BodyId");
+      bulk.ColumnMappings.Add("SampleJd",    "SampleJd");
+      bulk.ColumnMappings.Add("X_AU",        "X_AU");
+      bulk.ColumnMappings.Add("Y_AU",        "Y_AU");
+      bulk.ColumnMappings.Add("Z_AU",        "Z_AU");
+      bulk.ColumnMappings.Add("VX_AUPerDay", "VX_AUPerDay");
+      bulk.ColumnMappings.Add("VY_AUPerDay", "VY_AUPerDay");
+      bulk.ColumnMappings.Add("VZ_AUPerDay", "VZ_AUPerDay");
+      bulk.ColumnMappings.Add("Frame",       "Frame");
+      bulk.ColumnMappings.Add("Source",      "Source");
+      await bulk.WriteToServerAsync(table, ct);
     }
 
-    using var bulkCopy = new SqlBulkCopy(connection, SqlBulkCopyOptions.CheckConstraints, transaction)
-    {
-      DestinationTableName = "dbo.EphemerisSamples",
-      BulkCopyTimeout = 0
-    };
+    // Insert only rows that don't already exist. MERGE uses a join plan against
+    // the (BodyId, SampleJd) index — much faster than a correlated WHERE NOT EXISTS
+    // as the table grows to millions of rows.
+    const string insertSql = @"
+MERGE dbo.EphemerisSamples AS tgt
+USING #EphemerisStaging AS src ON tgt.BodyId = src.BodyId AND tgt.SampleJd = src.SampleJd
+WHEN NOT MATCHED BY TARGET THEN INSERT (
+    BodyId, SampleJd, X_AU, Y_AU, Z_AU, VX_AUPerDay, VY_AUPerDay, VZ_AUPerDay, Frame, Source
+) VALUES (
+    src.BodyId, src.SampleJd, src.X_AU, src.Y_AU, src.Z_AU,
+    src.VX_AUPerDay, src.VY_AUPerDay, src.VZ_AUPerDay, src.Frame, src.Source
+);";
 
-    bulkCopy.ColumnMappings.Add("BodyId", "BodyId");
-    bulkCopy.ColumnMappings.Add("SampleTimeUtc", "SampleTimeUtc");
-    bulkCopy.ColumnMappings.Add("X_AU", "X_AU");
-    bulkCopy.ColumnMappings.Add("Y_AU", "Y_AU");
-    bulkCopy.ColumnMappings.Add("Z_AU", "Z_AU");
-    bulkCopy.ColumnMappings.Add("VX_AUPerDay", "VX_AUPerDay");
-    bulkCopy.ColumnMappings.Add("VY_AUPerDay", "VY_AUPerDay");
-    bulkCopy.ColumnMappings.Add("VZ_AUPerDay", "VZ_AUPerDay");
-    bulkCopy.ColumnMappings.Add("Frame", "Frame");
-    bulkCopy.ColumnMappings.Add("Source", "Source");
-
-    await bulkCopy.WriteToServerAsync(table, cancellationToken);
-    return table.Rows.Count;
+    await using var tx = (SqlTransaction)await conn.BeginTransactionAsync(ct);
+    await using var insertCmd = new SqlCommand(insertSql, conn, tx) { CommandTimeout = 0 };
+    int inserted = await insertCmd.ExecuteNonQueryAsync(ct);
+    await tx.CommitAsync(ct);
+    return inserted;
   }
 
   private static DataTable CreateSampleDataTable()
   {
     var table = new DataTable();
-    table.Columns.Add("BodyId", typeof(int));
-    table.Columns.Add("SampleTimeUtc", typeof(DateTime));
-    table.Columns.Add("X_AU", typeof(double));
-    table.Columns.Add("Y_AU", typeof(double));
-    table.Columns.Add("Z_AU", typeof(double));
+    table.Columns.Add("BodyId",      typeof(int));
+    table.Columns.Add("SampleJd",    typeof(double));
+    table.Columns.Add("X_AU",        typeof(double));
+    table.Columns.Add("Y_AU",        typeof(double));
+    table.Columns.Add("Z_AU",        typeof(double));
     table.Columns.Add("VX_AUPerDay", typeof(double));
     table.Columns.Add("VY_AUPerDay", typeof(double));
     table.Columns.Add("VZ_AUPerDay", typeof(double));
-    table.Columns.Add("Frame", typeof(string));
-    table.Columns.Add("Source", typeof(string));
+    table.Columns.Add("Frame",       typeof(string));
+    table.Columns.Add("Source",      typeof(string));
     return table;
   }
 
   private sealed record SampleImportRow(
-    int BodyId,
-    DateTime SampleTimeUtc,
-    double X,
-    double Y,
-    double Z,
-    double Vx,
-    double Vy,
-    double Vz,
-    string Frame,
-    string Source);
-
+    int BodyId, double SampleJd,
+    double X, double Y, double Z,
+    double Vx, double Vy, double Vz,
+    string Frame, string Source);
 }

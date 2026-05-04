@@ -2,7 +2,7 @@ namespace Sol.Api.Models;
 
 public sealed record EphemerisSample(
   int BodyId,
-  DateTime SampleTimeUtc,
+  double SampleJd,
   double X,
   double Y,
   double Z,

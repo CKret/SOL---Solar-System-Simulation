@@ -2,112 +2,123 @@ SET ANSI_NULLS ON;
 SET QUOTED_IDENTIFIER ON;
 GO
 
--- CelestialBodies table (full physical/orbital schema)
-CREATE TABLE dbo.CelestialBodies (
-  BodyId INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_CelestialBodies PRIMARY KEY,
-  Slug NVARCHAR(64) NOT NULL,
-  DisplayName NVARCHAR(128) NOT NULL,
-  Category NVARCHAR(64) NULL,
-  Kind NVARCHAR(64) NULL,
-  ParentBodyId INT NULL,
-  SortOrder INT NOT NULL CONSTRAINT DF_CelestialBodies_SortOrder DEFAULT (0),
-  IsActive BIT NOT NULL CONSTRAINT DF_CelestialBodies_IsActive DEFAULT (1),
-  MetadataJson NVARCHAR(MAX) NULL,
-  JplId NVARCHAR(32) NULL,
-  MinEpoch NVARCHAR(32) NULL,
-  MaxEpoch NVARCHAR(32) NULL,
-  Aphelion_AU FLOAT NULL,
-  Perihelion_AU FLOAT NULL,
-  Eccentricity FLOAT NULL,
-  Inclination_deg FLOAT NULL,
-  SemiMajorAxis_AU FLOAT NULL,
-  ArgumentOfPerihelion_deg FLOAT NULL,
-  LongitudeOfAscendingNode_deg FLOAT NULL,
-  MeanAnomaly_deg FLOAT NULL,
-  MeanMotion_degPerDay FLOAT NULL,
-  OrbitalPeriod_days FLOAT NULL,
-  Epoch_JD FLOAT NULL,
-  MeanRadius_km FLOAT NULL,
-  Density_gcm3 FLOAT NULL,
-  Mass_1e23kg FLOAT NULL,
-  Volume_1e10km3 FLOAT NULL,
-  SiderealRotPeriod_d FLOAT NULL,
-  SiderealRotRate_radps FLOAT NULL,
-  MeanSolarDay_d FLOAT NULL,
-  CoreRadius_km FLOAT NULL,
-  GeometricAlbedo FLOAT NULL,
-  SurfaceEmissivity FLOAT NULL,
-  GM_km3s2 FLOAT NULL,
-  EquatorialRadius_km FLOAT NULL,
-  MassRatioSunPlanet FLOAT NULL,
-  MomentOfInertia FLOAT NULL,
-  EquatorialGravity_ms2 FLOAT NULL,
-  AtmosPressure_bar FLOAT NULL,
-  MaxAngularDiam_arcsec FLOAT NULL,
-  MeanTemperature_K FLOAT NULL,
-  VisualMag FLOAT NULL,
-  ObliquityToOrbit_arcmin FLOAT NULL,
-  HillSphereRadius_Rp FLOAT NULL,
-  SiderealOrbPeriod_y FLOAT NULL,
-  SiderealOrbPeriod_d FLOAT NULL,
-  EscapeVelocity_kms FLOAT NULL,
-  MeanOrbitVelocity_kms FLOAT NULL,
-  SolarConstant_Wm2_Mean FLOAT NULL,
-  SolarConstant_Wm2_Perihelion FLOAT NULL,
-  SolarConstant_Wm2_Aphelion FLOAT NULL,
-  MaxPlanetaryIR_Wm2_Mean FLOAT NULL,
-  MaxPlanetaryIR_Wm2_Perihelion FLOAT NULL,
-  MaxPlanetaryIR_Wm2_Aphelion FLOAT NULL,
-  MinPlanetaryIR_Wm2_Mean FLOAT NULL,
-  MinPlanetaryIR_Wm2_Perihelion FLOAT NULL,
-  MinPlanetaryIR_Wm2_Aphelion FLOAT NULL,
-  CreatedUtc DATETIME2(0) NOT NULL CONSTRAINT DF_CelestialBodies_CreatedUtc DEFAULT (SYSUTCDATETIME()),
-  UpdatedUtc DATETIME2(0) NOT NULL CONSTRAINT DF_CelestialBodies_UpdatedUtc DEFAULT (SYSUTCDATETIME()),
-  CONSTRAINT UQ_CelestialBodies_Slug UNIQUE (Slug),
-  CONSTRAINT FK_CelestialBodies_ParentBody FOREIGN KEY (ParentBodyId) REFERENCES dbo.CelestialBodies (BodyId)
+-- ============================================================
+-- dbo.Bodies
+-- ============================================================
+CREATE TABLE dbo.Bodies (
+  BodyId               INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Bodies PRIMARY KEY,
+  Slug                 NVARCHAR(64)  NOT NULL,
+  DisplayName          NVARCHAR(128) NOT NULL,
+  Kind                 NVARCHAR(32)  NOT NULL,   -- star|planet|dwarf-planet|moon|asteroid|comet|comet-fragment|probe
+  ParentBodyId         INT           NULL,
+  SortOrder            INT           NOT NULL CONSTRAINT DF_Bodies_SortOrder            DEFAULT (0),
+  IsActive             BIT           NOT NULL CONSTRAINT DF_Bodies_IsActive             DEFAULT (1),
+  Source               NVARCHAR(32)  NULL,        -- horizons|mpcorb|manual
+  JplHorizonsId        NVARCHAR(64)  NULL,        -- Horizons COMMAND string (e.g. "199", "DES=1P;CAP;NOFRAG")
+  SbdbDesig            NVARCHAR(64)  NULL,        -- JPL SBDB designation
+  H_AbsMag             FLOAT         NULL,        -- absolute magnitude H; used for cutoff filtering
+  G_Slope              FLOAT         NULL,        -- phase slope G
+  HasEphemeris         BIT           NOT NULL CONSTRAINT DF_Bodies_HasEphemeris         DEFAULT (0),
+  CompletedEphemeris   BIT           NOT NULL CONSTRAINT DF_Bodies_CompletedEphemeris   DEFAULT (0),
+  EphemerisMinJD       FLOAT         NULL,        -- Julian Day of earliest Horizons data for this body
+  EphemerisMaxJD       FLOAT         NULL,        -- Julian Day of latest   Horizons data for this body
+  EphemerisMinStr      NVARCHAR(48)  NULL,        -- human-readable (e.g. "BC 9999-Jan-01 12:00")
+  EphemerisMaxStr      NVARCHAR(48)  NULL,
+  -- Keplerian orbital elements (J2000 ecliptic, heliocentric unless body is a moon)
+  Eccentricity         FLOAT         NULL,
+  Perihelion_AU        FLOAT         NULL,
+  Aphelion_AU          FLOAT         NULL,
+  Inclination_deg      FLOAT         NULL,
+  LongAscNode_deg      FLOAT         NULL,
+  ArgPerihelion_deg    FLOAT         NULL,
+  SemiMajorAxis_AU     FLOAT         NULL,
+  MeanAnomaly_deg      FLOAT         NULL,
+  MeanMotion_degPerDay FLOAT         NULL,
+  OrbitalPeriod_days   FLOAT         NULL,
+  Epoch_JD             FLOAT         NULL,        -- osculating epoch as Julian Day
+  T_Perihelion_JD      FLOAT         NULL,        -- time of perihelion passage (comets)
+  -- Simulation-critical physical properties
+  GM_km3s2             FLOAT         NULL,
+  MeanRadius_km        FLOAT         NULL,
+  EquatorialRadius_km  FLOAT         NULL,
+  Mass_1e23kg          FLOAT         NULL,
+  -- Remaining physical properties (density, albedo, temperatures, etc.)
+  PhysicsJson          NVARCHAR(MAX) NULL,
+  CreatedUtc           DATETIME2(0)  NOT NULL CONSTRAINT DF_Bodies_CreatedUtc DEFAULT (SYSUTCDATETIME()),
+  UpdatedUtc           DATETIME2(0)  NOT NULL CONSTRAINT DF_Bodies_UpdatedUtc DEFAULT (SYSUTCDATETIME()),
+  CONSTRAINT UQ_Bodies_Slug   UNIQUE (Slug),
+  CONSTRAINT FK_Bodies_Parent FOREIGN KEY (ParentBodyId) REFERENCES dbo.Bodies (BodyId)
 );
 GO
 
--- EphemerisSamples table
+CREATE INDEX IX_Bodies_SortOrder ON dbo.Bodies (SortOrder, DisplayName);
+GO
+
+CREATE INDEX IX_Bodies_Kind ON dbo.Bodies (Kind) INCLUDE (Slug, DisplayName, SortOrder);
+GO
+
+CREATE INDEX IX_Bodies_H ON dbo.Bodies (H_AbsMag) WHERE H_AbsMag IS NOT NULL;
+GO
+
+-- ============================================================
+-- dbo.EphemerisSamples
+-- SampleJd is a Julian Day Number (FLOAT) so BC dates are representable.
+-- ============================================================
 CREATE TABLE dbo.EphemerisSamples (
   EphemerisSampleId BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_EphemerisSamples PRIMARY KEY,
-  BodyId INT NOT NULL,
-  SampleTimeUtc DATETIME2(3) NOT NULL,
-  X_AU FLOAT NOT NULL,
-  Y_AU FLOAT NOT NULL,
-  Z_AU FLOAT NOT NULL,
-  VX_AUPerDay FLOAT NULL,
-  VY_AUPerDay FLOAT NULL,
-  VZ_AUPerDay FLOAT NULL,
-  Frame NVARCHAR(64) NULL,
-  Source NVARCHAR(64) NULL,
-  CreatedUtc DATETIME2(0) NOT NULL CONSTRAINT DF_EphemerisSamples_CreatedUtc DEFAULT (SYSUTCDATETIME()),
-  CONSTRAINT FK_EphemerisSamples_CelestialBodies FOREIGN KEY (BodyId) REFERENCES dbo.CelestialBodies (BodyId),
-  CONSTRAINT UQ_EphemerisSamples_BodyTime UNIQUE (BodyId, SampleTimeUtc)
+  BodyId            INT          NOT NULL,
+  SampleJd          FLOAT        NOT NULL,
+  X_AU              FLOAT        NOT NULL,
+  Y_AU              FLOAT        NOT NULL,
+  Z_AU              FLOAT        NOT NULL,
+  VX_AUPerDay       FLOAT        NULL,
+  VY_AUPerDay       FLOAT        NULL,
+  VZ_AUPerDay       FLOAT        NULL,
+  Frame             NVARCHAR(64) NULL,
+  Source            NVARCHAR(64) NULL,
+  CreatedUtc        DATETIME2(0) NOT NULL CONSTRAINT DF_EphemerisSamples_CreatedUtc DEFAULT (SYSUTCDATETIME()),
+  CONSTRAINT FK_EphemerisSamples_Bodies FOREIGN KEY (BodyId) REFERENCES dbo.Bodies (BodyId),
+  CONSTRAINT UQ_EphemerisSamples_BodyJd UNIQUE (BodyId, SampleJd)
 );
 GO
 
--- Indexes
-CREATE INDEX IX_EphemerisSamples_Body_Time
-  ON dbo.EphemerisSamples (BodyId, SampleTimeUtc)
+CREATE INDEX IX_EphemerisSamples_Body_Jd
+  ON dbo.EphemerisSamples (BodyId, SampleJd)
   INCLUDE (X_AU, Y_AU, Z_AU, VX_AUPerDay, VY_AUPerDay, VZ_AUPerDay, Frame, Source);
 GO
 
-CREATE INDEX IX_CelestialBodies_SortOrder
-  ON dbo.CelestialBodies (SortOrder, DisplayName);
+-- ============================================================
+-- dbo.EphemerisImportLog
+-- Tracks every chunk [StartJd, EndJd] attempted per body so
+-- interrupted imports can resume without re-fetching data.
+-- SampleCount = 0 means Horizons confirmed no data for that chunk.
+-- ============================================================
+CREATE TABLE dbo.EphemerisImportLog (
+  BodyId      INT          NOT NULL,
+  StartJd     FLOAT        NOT NULL,
+  EndJd       FLOAT        NOT NULL,
+  SampleCount INT          NOT NULL,
+  ImportedUtc DATETIME2(3) NOT NULL CONSTRAINT DF_EphemerisImportLog_ImportedUtc DEFAULT SYSUTCDATETIME(),
+  CONSTRAINT PK_EphemerisImportLog      PRIMARY KEY (BodyId, StartJd, EndJd),
+  CONSTRAINT FK_EphemerisImportLog_Body FOREIGN KEY (BodyId) REFERENCES dbo.Bodies (BodyId)
+);
 GO
 
+-- ============================================================
 -- Permissions
+-- ============================================================
 IF DATABASE_PRINCIPAL_ID(N'sol_reader') IS NOT NULL
 BEGIN
-  GRANT SELECT ON dbo.CelestialBodies TO sol_reader;
-  GRANT SELECT ON dbo.EphemerisSamples TO sol_reader;
+  GRANT SELECT ON dbo.Bodies             TO sol_reader;
+  GRANT SELECT ON dbo.EphemerisSamples   TO sol_reader;
+  GRANT SELECT ON dbo.EphemerisImportLog TO sol_reader;
 END;
 GO
 
 IF DATABASE_PRINCIPAL_ID(N'sol_user') IS NOT NULL
 BEGIN
-  GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.CelestialBodies TO sol_user;
-  GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.EphemerisSamples TO sol_user;
+  GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.Bodies             TO sol_user;
+  GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.EphemerisSamples   TO sol_user;
+  GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.EphemerisImportLog TO sol_user;
 END;
 GO

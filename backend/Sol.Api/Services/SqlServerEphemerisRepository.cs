@@ -80,31 +80,34 @@ public sealed class SqlServerEphemerisRepository(ISqlConnectionFactory connectio
 
   public async Task<IReadOnlyList<EphemerisSample>> GetSamplesByBodyIdAsync(int bodyId, DateTime startUtc, DateTime endUtc, int limit, CancellationToken cancellationToken)
   {
+    double startJd = JulianDateConverter.FromDateTime(DateTime.SpecifyKind(startUtc, DateTimeKind.Utc));
+    double endJd   = JulianDateConverter.FromDateTime(DateTime.SpecifyKind(endUtc,   DateTimeKind.Utc));
+
     const string sql = @"
-SELECT TOP (@limit) BodyId, SampleTimeUtc,
+SELECT TOP (@limit) BodyId, SampleJd,
   X_AU AS X, Y_AU AS Y, Z_AU AS Z,
   VX_AUPerDay AS Vx, VY_AUPerDay AS Vy, VZ_AUPerDay AS Vz,
   Frame
 FROM dbo.EphemerisSamples
 WHERE BodyId = @bodyId
-  AND SampleTimeUtc >= @startUtc
-  AND SampleTimeUtc <= @endUtc
-ORDER BY SampleTimeUtc;";
+  AND SampleJd >= @startJd
+  AND SampleJd <= @endJd
+ORDER BY SampleJd;";
 
     await using var connection = _connectionFactory.CreateConnection();
     await connection.OpenAsync(cancellationToken);
     await using var command = new SqlCommand(sql, connection);
-    command.Parameters.AddWithValue("@bodyId",   bodyId);
-    command.Parameters.AddWithValue("@startUtc", DateTime.SpecifyKind(startUtc, DateTimeKind.Utc));
-    command.Parameters.AddWithValue("@endUtc",   DateTime.SpecifyKind(endUtc,   DateTimeKind.Utc));
-    command.Parameters.AddWithValue("@limit",    limit);
+    command.Parameters.AddWithValue("@bodyId",  bodyId);
+    command.Parameters.AddWithValue("@startJd", startJd);
+    command.Parameters.AddWithValue("@endJd",   endJd);
+    command.Parameters.AddWithValue("@limit",   limit);
     await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, cancellationToken);
 
     var results = new List<EphemerisSample>();
     while (await reader.ReadAsync(cancellationToken)) {
       results.Add(new EphemerisSample(
-        BodyId:        GetInt32(reader, "BodyId"),
-        SampleTimeUtc: DateTime.SpecifyKind(GetDateTime(reader, "SampleTimeUtc"), DateTimeKind.Utc),
+        BodyId:   GetInt32(reader, "BodyId"),
+        SampleJd: GetDouble(reader, "SampleJd"),
         X:  GetDouble(reader, "X"),
         Y:  GetDouble(reader, "Y"),
         Z:  GetDouble(reader, "Z"),
@@ -149,10 +152,9 @@ ORDER BY SampleTimeUtc;";
     Mass_1e23kg:         GetNullableDouble(r, "Mass_1e23kg")
   );
 
-  private static int      GetInt32(SqlDataReader r, string col)    => r.GetInt32(r.GetOrdinal(col));
-  private static string   GetString(SqlDataReader r, string col)   => r.GetString(r.GetOrdinal(col));
-  private static double   GetDouble(SqlDataReader r, string col)   => r.GetDouble(r.GetOrdinal(col));
-  private static DateTime GetDateTime(SqlDataReader r, string col) => r.GetDateTime(r.GetOrdinal(col));
+  private static int    GetInt32(SqlDataReader r, string col)  => r.GetInt32(r.GetOrdinal(col));
+  private static string GetString(SqlDataReader r, string col) => r.GetString(r.GetOrdinal(col));
+  private static double GetDouble(SqlDataReader r, string col) => r.GetDouble(r.GetOrdinal(col));
 
   private static int? GetNullableInt32(SqlDataReader r, string col) {
     var ord = r.GetOrdinal(col);

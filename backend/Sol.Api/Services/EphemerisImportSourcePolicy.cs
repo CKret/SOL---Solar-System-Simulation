@@ -46,12 +46,12 @@ public static class EphemerisImportSourcePolicy
       || string.Equals(slug, "voyager-2", StringComparison.OrdinalIgnoreCase);
   }
 
-  public static IReadOnlyList<EphemerisImportWindow> GetWindowsForTarget(string slug, DateTime startUtc, DateTime endUtc, TimeSpan? sampleRateOverride)
+  public static IReadOnlyList<EphemerisImportWindow> GetWindowsForTarget(string slug, double startJd, double endJd, TimeSpan? sampleRateOverride)
   {
     var baseStep = sampleRateOverride ?? GetBaseSampleRate(slug);
     var windows = new List<EphemerisImportWindow>
     {
-      new(startUtc, endUtc, baseStep, "default")
+      new(startJd, endJd, baseStep, "default")
     };
 
     if (!IsVoyager(slug)) {
@@ -59,8 +59,8 @@ public static class EphemerisImportSourcePolicy
     }
 
     foreach (var encounter in VoyagerHourlyEncounterWindows.Where(encounter => string.Equals(encounter.Slug, slug, StringComparison.OrdinalIgnoreCase))) {
-      var overlapStart = startUtc > encounter.StartUtc ? startUtc : encounter.StartUtc;
-      var overlapEnd = endUtc < encounter.EndUtc ? endUtc : encounter.EndUtc;
+      var overlapStart = startJd > encounter.StartJd ? startJd : encounter.StartJd;
+      var overlapEnd = endJd < encounter.EndJd ? endJd : encounter.EndJd;
       if (overlapStart > overlapEnd) {
         continue;
       }
@@ -73,14 +73,14 @@ public static class EphemerisImportSourcePolicy
 
   private static readonly VoyagerEncounterWindow[] VoyagerHourlyEncounterWindows =
   [
-    new("voyager-1", new DateTime(1979, 3, 4, 0, 0, 0, DateTimeKind.Utc), new DateTime(1979, 3, 8, 0, 0, 0, DateTimeKind.Utc), "jupiter-encounter"),
-    new("voyager-1", new DateTime(1980, 11, 10, 0, 0, 0, DateTimeKind.Utc), new DateTime(1980, 11, 14, 0, 0, 0, DateTimeKind.Utc), "saturn-encounter"),
-    new("voyager-2", new DateTime(1979, 7, 8, 0, 0, 0, DateTimeKind.Utc), new DateTime(1979, 7, 12, 0, 0, 0, DateTimeKind.Utc), "jupiter-encounter"),
-    new("voyager-2", new DateTime(1981, 8, 24, 0, 0, 0, DateTimeKind.Utc), new DateTime(1981, 8, 28, 0, 0, 0, DateTimeKind.Utc), "saturn-encounter"),
-    new("voyager-2", new DateTime(1986, 1, 23, 0, 0, 0, DateTimeKind.Utc), new DateTime(1986, 1, 27, 0, 0, 0, DateTimeKind.Utc), "uranus-encounter"),
-    new("voyager-2", new DateTime(1989, 8, 24, 0, 0, 0, DateTimeKind.Utc), new DateTime(1989, 8, 28, 0, 0, 0, DateTimeKind.Utc), "neptune-encounter")
+    new("voyager-1", JulianDateConverter.FromCalendar(1979, 3,  4.0), JulianDateConverter.FromCalendar(1979, 3,  8.0), "jupiter-encounter"),
+    new("voyager-1", JulianDateConverter.FromCalendar(1980, 11, 10.0), JulianDateConverter.FromCalendar(1980, 11, 14.0), "saturn-encounter"),
+    new("voyager-2", JulianDateConverter.FromCalendar(1979, 7,  8.0), JulianDateConverter.FromCalendar(1979, 7,  12.0), "jupiter-encounter"),
+    new("voyager-2", JulianDateConverter.FromCalendar(1981, 8,  24.0), JulianDateConverter.FromCalendar(1981, 8,  28.0), "saturn-encounter"),
+    new("voyager-2", JulianDateConverter.FromCalendar(1986, 1,  23.0), JulianDateConverter.FromCalendar(1986, 1,  27.0), "uranus-encounter"),
+    new("voyager-2", JulianDateConverter.FromCalendar(1989, 8,  24.0), JulianDateConverter.FromCalendar(1989, 8,  28.0), "neptune-encounter")
   ];
 }
 
-public sealed record EphemerisImportWindow(DateTime StartUtc, DateTime EndUtc, TimeSpan Step, string Reason);
-internal sealed record VoyagerEncounterWindow(string Slug, DateTime StartUtc, DateTime EndUtc, string Label);
+public sealed record EphemerisImportWindow(double StartJd, double EndJd, TimeSpan Step, string Reason);
+internal sealed record VoyagerEncounterWindow(string Slug, double StartJd, double EndJd, string Label);

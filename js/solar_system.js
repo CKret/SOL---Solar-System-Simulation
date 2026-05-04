@@ -3816,10 +3816,13 @@ renderer.domElement.addEventListener('mousedown', e=>{
 });
 renderer.domElement.addEventListener('contextmenu', e=>e.preventDefault());
 window.addEventListener('mouseup', ()=>{
+  const wasDragging = dragging || rDragging;
   dragging=false;
   rDragging=false;
   setSceneDragSelectionSuppressed(false);
-  clearBrowserTextSelection();
+  // Only clear text selection after actual canvas drags — calling removeAllRanges()
+  // unconditionally fires a real blur on focused inputs in Chrome, breaking the search box.
+  if (wasDragging) clearBrowserTextSelection();
 });
 window.addEventListener('mousemove', e=>{
   const dx=e.clientX-prevX, dy=e.clientY-prevY;
@@ -4805,10 +4808,7 @@ animate();
       showInfo('probe', obj);
     }
 
-    // Close search
-    c.orbitLine.visible = isCometAvailableAtTime(c) && orbitsOn && (viewMode==='solar');
-    dropdown.style.display = 'none';
-    input.blur();
+    for (const c of comets) c.orbitLine.visible = isCometAvailableAtTime(c) && orbitsOn && (viewMode==='solar');
   }
 
   let catalog = [];
@@ -4887,9 +4887,20 @@ animate();
     }
   }
 
+  // Prevent the dropdown from stealing focus from the input when clicked
+  dropdown.addEventListener('mousedown', e => e.preventDefault());
+
+  let _blurTid = 0;
+  input.addEventListener('blur', () => {
+    if (document.activeElement === input) return;
+    _blurTid = setTimeout(() => { dropdown.style.display = 'none'; }, 200);
+  });
+
   input.addEventListener('focus', () => {
+    clearTimeout(_blurTid);
+    input.value = '';
     if (!catalog.length) catalog = buildCatalog();
-    renderDropdown(input.value);
+    renderDropdown('');
   });
 
   input.addEventListener('input', () => {
@@ -4904,10 +4915,16 @@ animate();
       if (activeIdx >= 0) {
         suppressSceneClick();
         visibleItems[activeIdx].entry.action();
+        dropdown.style.display = 'none';
+        input.blur();
+        closeMobilePanels();
       }
       else if (visibleItems.length === 1) {
         suppressSceneClick();
         visibleItems[0].entry.action();
+        dropdown.style.display = 'none';
+        input.blur();
+        closeMobilePanels();
       }
     }
     else if (e.key === 'Escape') { dropdown.style.display = 'none'; input.blur(); }
