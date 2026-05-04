@@ -52,74 +52,79 @@ No build step is required.
 
 ## Ephemeris API
 
-This repo now includes an IIS-friendly ASP.NET Core backend scaffold in [backend/Sol.Api](backend/Sol.Api) for serving ephemeris data from an existing SQL Server database.
+This repo includes an ASP.NET Core backend in [backend/Sol.Api](backend/Sol.Api) that serves pre-computed ephemeris data from SQL Server. The frontend can keep running as a static site; the API is an optional layer that provides high-precision positional data for supported bodies.
 
-Run it locally from the project root:
+### Schema
+
+The full schema is in [backend/Sol.Api/sql/001_initial_schema.sql](backend/Sol.Api/sql/001_initial_schema.sql). Key tables:
+
+- `dbo.Bodies` — all known bodies: 116 authoritative (planets, moons, comets, probes) plus ~1.5 million minor planets imported from the MPC Orbit Database. Stores orbital elements, absolute magnitude, JPL Horizons ID, and the valid ephemeris date range per body as Julian Day Numbers.
+- `dbo.EphemerisSamples` — pre-fetched state vectors (position + velocity in AU and AU/day, Solar System Barycenter / Ecliptic J2000 frame) keyed by `(BodyId, SampleJd)`.
+- `dbo.EphemerisImportLog` — chunk-level import log used to resume interrupted runs and skip already-fetched date windows.
+
+All dates are stored as Julian Day Numbers (`FLOAT`) so the schema can represent dates from BC 9999 to AD 9999 without calendar-system constraints.
+
+### Running the API
 
 ```bash
 dotnet run --project backend/Sol.Api
 ```
 
-By default the API listens on the standard ASP.NET Core development URLs. The frontend can keep running as a static site, while the backend serves ephemeris data from SQL Server.
+By default the API listens on the standard ASP.NET Core development URLs.
 
-Configuration lives in [backend/Sol.Api/appsettings.json](backend/Sol.Api/appsettings.json):
+### Configuration
 
-- `ConnectionStrings:EphemerisDb`: points at `DC01/sol_ephemeris` by default, but without embedded credentials.
-- `EphemerisSql:BodiesQuery`: query that returns `Id`, `Slug`, `Name`, and optional `Category`.
-- `EphemerisSql:BodyBySlugQuery`: query that returns one body row using the same aliases.
-- `EphemerisSql:SamplesRangeQuery`: query that returns `BodyId`, `SampleTimeUtc`, `X`, `Y`, `Z`, and optional `Vx`, `Vy`, `Vz`, `Frame`.
-
-The API now assumes a concrete starter schema with these tables:
-
-- `dbo.CelestialBodies`
-- `dbo.EphemerisSamples`
-
-The install script is in [backend/Sol.Api/sql/001_initial_schema.sql](backend/Sol.Api/sql/001_initial_schema.sql).
-
-Local development credentials should live in .NET user-secrets so they never enter git-tracked files:
+Connection strings live in .NET user-secrets so credentials never enter tracked files:
 
 ```bash
-dotnet user-secrets --project backend/Sol.Api set "ConnectionStrings:EphemerisDb" "Server=DC01;Database=sol_ephemeris;User ID=sol_reader;Password=<your-password>;Encrypt=False;TrustServerCertificate=True;"
-dotnet run --project backend/Sol.Api
+dotnet user-secrets --project backend/Sol.Api set "ConnectionStrings:EphemerisDb" "Server=<host>;Database=sol_ephemeris;User ID=sol_reader;Password=<pw>;Encrypt=False;TrustServerCertificate=True;"
+dotnet user-secrets --project backend/Sol.Api set "ConnectionStrings:EphemerisDbWrite" "Server=<host>;Database=sol_ephemeris;User ID=sol_user;Password=<pw>;Encrypt=False;TrustServerCertificate=True;"
 ```
 
-You can inspect or update the local secret store with:
+The API uses `sol_reader` (read-only) at runtime. Import commands use `sol_user` (read-write). For IIS, set `ConnectionStrings__EphemerisDb` and `ConnectionStrings__EphemerisDbWrite` in the application environment instead of user-secrets.
 
-```bash
-dotnet user-secrets --project backend/Sol.Api list
-```
-
-For IIS, do not use user-secrets. Set `ConnectionStrings__EphemerisDb` in the application environment or deployment configuration on the server. The recommended runtime login for the API is the read-only `sol_reader` account. Use `sol_user` only for import or administrative tooling.
-
-Available endpoints:
+### Endpoints
 
 - `GET /api/health`
-- `GET /api/bodies`
+- `GET /api/bodies?h_max=<magnitude>` — returns active bodies; `h_max` filters by absolute magnitude (omit for all bodies)
 - `GET /api/bodies/{slug}`
-- `GET /api/ephemeris/{bodyId}?startUtc=2026-01-01T00:00:00Z&endUtc=2026-01-02T00:00:00Z&limit=1440`
-- `GET /api/ephemeris/by-slug/{slug}?startUtc=2026-01-01T00:00:00Z&endUtc=2026-01-02T00:00:00Z&limit=1440`
+- `GET /api/ephemeris/{bodyId}?startUtc=...&endUtc=...&limit=1440`
+- `GET /api/ephemeris/by-slug/{slug}?startUtc=...&endUtc=...&limit=1440`
 
-To seed `dbo.CelestialBodies` from authoritative sources using the write-capable SQL login stored in user-secrets:
+### Import Commands
+
+**1. Authoritative bodies** — imports the ~116 curated bodies (planets, moons, dwarf planets, comets, Voyager probes) from JPL Horizons and the JPL Small-Body Database:
 
 ```bash
 dotnet run --project backend/Sol.Api -- import-bodies
 ```
 
-That import now fetches solar-system body metadata directly from JPL Horizons and the JPL Small-Body Database. The active import set includes the current sim body catalog baseline (Sun, the eight planets, 65 moons including Charon, nine dwarf planets / TNOs, ten comets, and Voyager 1/2) plus explicitly modeled fragment bodies where we want to preserve fragment identity, such as Shoemaker-Levy 9 fragments. Any rows not present in the authoritative import set are marked inactive so the API does not continue serving stale frontend-derived entries.
-
-Fragments are modeled as normal bodies with their own slugs and ephemerides, typically parented to the source body through `ParentBodyId`. That keeps fragment handling compatible with the same catalog and sample-import pipeline used for moons and other child bodies.
-
-To import ephemeris samples for the active catalog over a UTC date range:
+**2. Minor planets** — imports orbital elements from the MPC Orbit Database (MPCORB):
 
 ```bash
-dotnet run --project backend/Sol.Api -- import-samples 2024-12-30T00:00:00Z 2025-01-03T00:00:00Z daily
+dotnet run --project backend/Sol.Api -- import-mpcorb          # ~1500 numbered objects (sample)
+dotnet run --project backend/Sol.Api -- import-mpcorb full     # full ~1.5 million object catalog
 ```
 
-The `import-samples` command takes three time parameters: `startUtc`, `endUtc`, and `sampleRate`. `sampleRate` may be `auto`, `default`, `hourly`, `daily`, `<n>h`, or `<n>d`. If omitted, the importer uses the body-specific default rate policy. The current policy sets a daily base rate for every current body, and Voyager 1 and 2 additionally fetch hourly samples during the Jupiter, Saturn, Uranus, and Neptune encounter windows so flyby periods are captured at higher resolution.
+**3. Ephemeris samples** — fetches state vectors from the JPL Horizons API for bodies that have a stored Horizons date range:
 
-Imports do not delete the whole `dbo.EphemerisSamples` table. They only replace rows for the imported bodies inside the requested time window.
+```bash
+dotnet run --project backend/Sol.Api -- import-samples [h_max] [startUtc] [endUtc] [step]
+```
 
-For IIS hosting, publish the ASP.NET Core app and configure the IIS site or application to point at the published output. SQL Server can remain on the same host; the API uses the normal SQL Server connection string and does not require SQLite or any embedded database.
+- `h_max`: absolute magnitude cutoff — imports bodies where `H <= h_max` or `H IS NULL` (authoritative bodies). Omit to import all eligible bodies.
+- `startUtc` / `endUtc`: optional batch window clipped to each body's stored Horizons range.
+- `step`: sample rate — `daily`, `hourly`, `<n>h`, `<n>d`. Defaults to 1 day.
+
+Example — import daily samples for all bodies brighter than H=15 (≈ 83,000 objects) over their full available date range:
+
+```bash
+dotnet run --project backend/Sol.Api -- import-samples 15
+```
+
+Imports are resumable: each fetched chunk is logged in `dbo.EphemerisImportLog` and skipped on re-runs. A body is marked `CompletedEphemeris=1` once its entire stored date range is fully logged. The importer runs 5 bodies in parallel.
+
+For IIS hosting, publish the app and point the IIS site at the published output. SQL Server can remain on the same host.
 
 ## Current Feature Set
 
@@ -220,6 +225,8 @@ For IIS hosting, publish the ASP.NET Core app and configure the IIS site or appl
 - Bright-star positions and proper motions are derived from Hipparcos-style catalog data in a J2000 reference frame.
 - Dwarf-planet orientation/orbit terms such as $\omega$ and $\Omega$ are sourced from JPL small-body style data.
 - Voyager 1 and 2 trajectories are sampled from JPL Horizons output in the Solar System Barycenter, Ecliptic J2000 frame, then converted into the simulator's scene coordinates.
+- Minor planet orbital elements are sourced from the [MPC Orbit Database (MPCORB)](https://minorplanetcenter.net/iau/MPCORB.html), covering ~1.5 million numbered and unnumbered minor planets.
+- Pre-computed state vectors (position and velocity) for supported bodies are fetched from the [JPL Horizons API](https://ssd.jpl.nasa.gov/horizons/) in the Solar System Barycenter / Ecliptic J2000 frame and stored in SQL Server for fast retrieval.
 
 ## Simulation Limits
 
