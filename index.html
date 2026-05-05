@@ -221,27 +221,112 @@ body.intro-active #mobile-backdrop {
   opacity:0;
 }
 
-.intro-flare {
-  position:absolute; left:50%; top:50%; transform:translate(-50%, -50%);
-  width:min(88vw, 1160px); height:min(10vw, 86px);
-  background:
-    linear-gradient(90deg, transparent 0%, rgba(110,170,255,0.06) 24%, rgba(255,255,255,0.13) 50%, rgba(110,170,255,0.06) 76%, transparent 100%);
-  filter:blur(7px);
-  opacity:0;
-  mix-blend-mode:screen;
-  animation:introFlare 10s ease forwards;
-}
+.intro-flare,
 .intro-flare::before,
 .intro-flare::after {
-  content:''; position:absolute; top:50%; transform:translateY(-50%); border-radius:999px;
+  position:absolute;
+  pointer-events:none;
+  content:'';
+  mix-blend-mode:screen;
 }
+
+.intro-flare {
+  left:46%;
+  top:44%;
+  width:min(82vw, 980px);
+  height:min(82vw, 980px);
+  transform:translate(-50%, -50%);
+  opacity:0;
+  animation:introFlare 10s ease forwards;
+}
+
 .intro-flare::before {
-  left:50%; width:120px; height:34px; margin-left:-60px;
-  background:radial-gradient(ellipse at center, rgba(255,255,255,0.22) 0%, rgba(140,190,255,0.12) 42%, transparent 78%);
+  left:9%;
+  top:11%;
+  width:112px;
+  height:112px;
+  border-radius:50%;
+  background:
+    radial-gradient(circle at center,
+      rgba(255,255,255,0.98) 0%,
+      rgba(255,246,210,0.88) 9%,
+      rgba(196,225,255,0.48) 24%,
+      rgba(124,178,255,0.14) 42%,
+      rgba(124,178,255,0.03) 58%,
+      transparent 70%),
+    radial-gradient(circle at 44% 46%, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.14) 18%, transparent 38%);
+  box-shadow:
+    0 0 18px rgba(255,244,214,0.32),
+    0 0 42px rgba(150,196,255,0.18),
+    0 0 96px rgba(120,175,255,0.06);
+  filter:blur(0.2px);
 }
+
 .intro-flare::after {
-  left:50%; width:420px; height:18px; margin-left:-210px;
-  background:linear-gradient(90deg, transparent 0%, rgba(150,205,255,0.06) 18%, rgba(255,255,255,0.1) 50%, rgba(150,205,255,0.06) 82%, transparent 100%);
+  left:-8%;
+  top:14.5%;
+  width:76%;
+  height:10px;
+  border-radius:999px;
+  background:
+    linear-gradient(90deg,
+      transparent 0%,
+      rgba(140,190,255,0.02) 12%,
+      rgba(180,225,255,0.08) 20%,
+      rgba(255,255,255,0.16) 24%,
+      rgba(165,210,255,0.09) 32%,
+      rgba(120,170,255,0.04) 52%,
+      rgba(150,205,255,0.03) 66%,
+      transparent 100%);
+  transform:rotate(-16deg);
+  transform-origin:left center;
+  filter:blur(2.8px);
+}
+
+.intro-flare-ghosts,
+.intro-flare-ghosts::before,
+.intro-flare-ghosts::after {
+  position:absolute;
+  inset:0;
+  pointer-events:none;
+  content:'';
+  mix-blend-mode:screen;
+}
+
+.intro-flare-ghosts {
+  opacity:0;
+  animation:introFlareGhosts 10s ease forwards;
+}
+
+.intro-flare-ghosts::before {
+  background:
+    radial-gradient(circle at 26% 18%, rgba(120,170,255,0.1) 0%, rgba(120,170,255,0.045) 3.2%, transparent 6.5%),
+    radial-gradient(circle at 40% 28%, rgba(255,244,204,0.09) 0%, rgba(255,244,204,0.035) 2.8%, transparent 5.8%),
+    radial-gradient(circle at 55% 39%, rgba(110,205,255,0.08) 0%, rgba(110,205,255,0.03) 3.2%, transparent 6.4%),
+    radial-gradient(circle at 67% 48%, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.02) 2.2%, transparent 5%);
+  filter:blur(1px);
+}
+
+.intro-flare-ghosts::after {
+  background:
+    radial-gradient(circle at 19% 14%, rgba(255,255,255,0.06) 0%, transparent 1.8%),
+    radial-gradient(circle at 33% 23%, rgba(160,205,255,0.05) 0%, transparent 2.1%),
+    radial-gradient(circle at 49% 34%, rgba(255,233,170,0.05) 0%, transparent 2%),
+    radial-gradient(circle at 62% 44%, rgba(140,205,255,0.05) 0%, transparent 2.3%);
+  filter:blur(6px);
+}
+
+.intro-flare-bloom {
+  position:absolute;
+  inset:0;
+  pointer-events:none;
+  opacity:0;
+  mix-blend-mode:screen;
+  background:
+    radial-gradient(circle at 12% 12%, rgba(255,246,214,0.09) 0%, rgba(170,214,255,0.045) 7%, rgba(130,180,255,0.02) 14%, transparent 22%),
+    radial-gradient(circle at 12% 12%, rgba(255,255,255,0.05) 0%, transparent 8%);
+  filter:blur(24px);
+  animation:introFlareBloom 10s ease forwards;
 }
 
 .intro-ring,
@@ -410,10 +495,25 @@ body.intro-active #mobile-backdrop {
   100% { opacity:0.3; transform:scale(1); }
 }
 @keyframes introFlare {
-  0% { opacity:0; transform:translate(-50%, -50%) scaleX(0.62); }
-  30% { opacity:0.14; }
-  54% { opacity:0.3; }
-  100% { opacity:0; transform:translate(-50%, -50%) scaleX(1.08); }
+  0% { opacity:0; transform:translate(-48%, -47%) scale(0.92); }
+  24% { opacity:0.18; }
+  52% { opacity:0.52; }
+  72% { opacity:0.42; }
+  100% { opacity:0; transform:translate(-54%, -54%) scale(1.02); }
+}
+@keyframes introFlareGhosts {
+  0% { opacity:0; transform:translate(-2.5%, -3.5%) scale(0.96); }
+  26% { opacity:0.05; }
+  52% { opacity:0.26; }
+  74% { opacity:0.2; }
+  100% { opacity:0; transform:translate(0.8%, -0.5%) scale(1.02); }
+}
+@keyframes introFlareBloom {
+  0% { opacity:0; transform:translate(-2%, -2%) scale(0.88); }
+  20% { opacity:0.04; }
+  48% { opacity:0.18; }
+  70% { opacity:0.14; }
+  100% { opacity:0; transform:translate(-5%, -5%) scale(1.02); }
 }
 @keyframes introCredit {
   0%, 28% { opacity:0; letter-spacing:7px; transform:translate(-50%, calc(-50% - 108px)); }
@@ -527,6 +627,52 @@ body.intro-active #mobile-backdrop {
   background:rgba(255,255,255,0.75); cursor:pointer;
 }
 #spd-val { font-size:10px; color:rgba(255,255,255,0.32); letter-spacing:1px; }
+#objects-count-wrap {
+  display:flex;
+  flex-direction:column;
+  align-items:stretch;
+  gap:5px;
+  width:140px;
+}
+#objects-count-label {
+  font-size:10px;
+  letter-spacing:2px;
+  color:rgba(255,255,255,0.22);
+  text-align:right;
+}
+#objects-count-row {
+  display:flex;
+  align-items:center;
+  gap:6px;
+  overflow:hidden;
+}
+#objects-count-slider {
+  flex:1 1 0;
+  min-width:0;
+  max-width:100%;
+  appearance:none;
+  -webkit-appearance:none;
+  height:3px;
+  background:rgba(255,255,255,0.12);
+  outline:none;
+  cursor:pointer;
+}
+#objects-count-slider::-webkit-slider-thumb {
+  -webkit-appearance:none;
+  width:13px;
+  height:13px;
+  border-radius:50%;
+  background:rgba(80,200,255,0.85);
+  cursor:pointer;
+}
+#objects-count-value {
+  min-width:36px;
+  text-align:left;
+  font-size:10px;
+  letter-spacing:1px;
+  color:rgba(80,200,255,0.85);
+  white-space:nowrap;
+}
 .sbtn {
   background:transparent; border:1px solid rgba(255,255,255,0.14);
   color:rgba(255,255,255,0.32); font-family:'Courier New',monospace;
@@ -1131,6 +1277,21 @@ body:not(.mobile-ui) #focus-bar {
     gap:8px;
   }
 
+  body.mobile-ui #objects-count-wrap {
+    width:100%;
+    gap:8px;
+  }
+
+  body.mobile-ui #objects-count-label,
+  body.mobile-ui #objects-count-value {
+    text-align:left;
+    font-size:11px;
+  }
+
+  body.mobile-ui #objects-count-slider {
+    height:18px;
+  }
+
   body.mobile-ui #focus-select-label {
     text-align:left;
     font-size:11px;
@@ -1283,7 +1444,9 @@ body:not(.mobile-ui) #focus-bar {
     <div class="intro-nebula"></div>
     <div class="intro-stars"></div>
     <div class="intro-ftl"></div>
+    <div class="intro-flare-bloom"></div>
     <div class="intro-flare"></div>
+    <div class="intro-flare-ghosts"></div>
     <div class="intro-ring"></div>
     <div class="intro-crosshair"></div>
     <div id="intro-credit">Created by <strong>Sani Huttunen</strong></div>
@@ -1471,6 +1634,14 @@ body:not(.mobile-ui) #focus-bar {
       </optgroup>
     </select>
   </label>
+  <button class="sbtn" id="ephemeris-btn" title="E" style="border-color:rgba(80,200,255,0.4)">KEPLER MODE</button>
+  <label id="objects-count-wrap" for="objects-count-slider">
+    <span id="objects-count-label">EPH OBJECTS</span>
+    <div id="objects-count-row">
+      <span id="objects-count-value">800</span>
+      <input type="range" id="objects-count-slider" min="100" max="8000" step="100" value="800" aria-label="Ephemeris object count">
+    </div>
+  </label>
   <button class="sbtn" id="real-size-btn" title="S">REAL SIZE</button>
   <button class="sbtn" id="trails-btn" title="T">TRAILS ON</button>
   <button class="sbtn" id="orbits-btn" title="O">ORBITS ON</button>
@@ -1520,6 +1691,7 @@ body:not(.mobile-ui) #focus-bar {
 
 <script src="js/three.min.js"></script>
 <script src="js/voyager_trajectories.js"></script>
+<script src="js/ephemeris.js"></script>
 <script src="js/solar_system.js"></script>
 
 </body>

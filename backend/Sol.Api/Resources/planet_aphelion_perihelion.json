@@ -1,0 +1,12 @@
+
+[
+  { "name": "Mercury", "perihelion_au": 0.3075, "aphelion_au": 0.4667 },
+  { "name": "Venus",   "perihelion_au": 0.7184, "aphelion_au": 0.7282 },
+  { "name": "Earth",   "perihelion_au": 0.9833, "aphelion_au": 1.0167 },
+  { "name": "Mars",    "perihelion_au": 1.3814, "aphelion_au": 1.6660 },
+  { "name": "Jupiter", "perihelion_au": 4.9501, "aphelion_au": 5.4588 },
+  { "name": "Saturn",  "perihelion_au": 9.0236, "aphelion_au": 10.1662 },
+  { "name": "Uranus",  "perihelion_au": 18.3755, "aphelion_au": 20.0833 },
+  { "name": "Neptune", "perihelion_au": 29.7660, "aphelion_au": 30.4412 },
+  { "name": "Pluto",   "perihelion_au": 29.658, "aphelion_au": 49.305 }
+]

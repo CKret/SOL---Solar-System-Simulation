@@ -2,6 +2,60 @@
 
 This changelog is derived from the project's git commit messages and is listed newest first.
 
+## 2026-05-06
+
+### Added
+- Ephemeris mode toggle (**KEPLER MODE** / **EPHEMERIS ON**) switches between fast analytical orbits and high-precision pre-computed state vectors from the database.
+- Progressive 4-stage ephemeris fetch (±1 day → ±1 month → ±1 year → ±10 years): present-day positions load almost immediately and the cache broadens in the background.
+- **EPH OBJECTS** slider (100–8,000): controls how many minor planets are fetched from the database and rendered as a real-position point-particle cloud in the scene. Bodies are sorted by absolute magnitude so the brightest/largest objects appear first.
+- `getCacheVersion()` and `getCachedBodyIds()` added to the ephemeris module so the animation loop can react to new cache data and drive the particle system.
+- Moon glow dots: each moon now has a `THREE.Points` child rendered at a fixed 3 px regardless of zoom, keeping sub-pixel moons visible in real-size mode.
+- Per-frame orbit line pin: `pinOrbitLineGeometry()` writes the planet's exact current scene position directly into the two shared midpoint vertices of the orbit line's `BufferGeometry` every frame, eliminating the visible drift-and-jump cycle between full refreshes.
+- Cache version tracking in the animation loop: any completed ephemeris fetch stage immediately triggers an orbit line refresh and a particle cloud rebuild.
+
+### Changed
+- All `fetchWindow` calls now pass `h_max = 25` so MPCORB minor planets are included in the ephemeris fetch alongside authoritative bodies.
+- EPH OBJECTS slider change now triggers a cache clear and refetch unconditionally (previously required already being in ephemeris mode).
+- Free-mode left-drag rotation direction corrected: drag axes are no longer inverted when no object is focused. Focused-orbit drag direction is unchanged.
+- Right-click roll direction corrected when an object is focused.
+- EPH OBJECTS slider value label moved to the left of the slider track; slider CSS fixed to prevent overflow outside the panel.
+
+### Fixed
+- Backend SQL filter (`GetBulkSamplesAsync`): when `h_max` is provided, non-MPCORB bodies (planets, moons, etc.) are now always included regardless of their `H_AbsMag` value; previously bodies with a NULL absolute magnitude were excluded.
+- Orbit lines in ephemeris mode no longer revert to Kepler geometry after the initial fetch stage completes.
+- Orbit lines in real-size mode no longer visibly miss planet positions due to polyline chord deviation.
+
+### Documentation
+- README updated: project layout, endpoints, ephemeris mode section, EPH OBJECTS slider, texture upgrade backlog, ephemeris epoch coverage (1600–2500 AD for most bodies), orbit line pinning accuracy note, and `js/ephemeris.js` added to main files.
+
+### Maintenance
+- `_publish/` added to `.gitignore`.
+
+## 2026-05-04
+
+### Added
+- `9fc8921` Expanded body catalog to ~1.5 million objects via MPCORB full import.
+- `9fc8921` Ephemeris import now supports an `h_max` magnitude cutoff to limit which bodies receive pre-computed state vectors (e.g. `import-samples 15` fetches data for ~83k objects with H ≤ 15 or no magnitude).
+- `9fc8921` Ephemeris import is now resumable: every fetched chunk is logged in `EphemerisImportLog`; interrupted runs skip already-completed chunks and bodies on restart.
+- `9fc8921` `CompletedEphemeris` flag on `Bodies` marks bodies whose full Horizons date range is fully logged, allowing future runs to skip them instantly.
+- `9fc8921` Epoch-range clipping: each body's Horizons request is clipped to its stored `EphemerisMinJD`/`EphemerisMaxJD` so Horizons never returns empty data for out-of-range windows.
+- `94f9883` Initial ephemeris import pipeline and expansion to 41k+ objects.
+- `1a8fee6` Initial Ephemeris API and SQL Server schema (`dbo.Bodies`, `dbo.EphemerisSamples`).
+
+### Changed
+- `9fc8921` All ephemeris dates migrated to Julian Day Numbers (FLOAT) to support BC dates (BC 9999 – AD 9999) without calendar-system constraints.
+- `9fc8921` Schema consolidated into a single `001_initial_schema.sql` migration.
+- `9fc8921` `import-samples` command signature updated: `import-samples [h_max] [startUtc] [endUtc] [step]`.
+
+### Fixed
+- `9fc8921` Fixed DB schema collation conflict between `tempdb` and `sol_ephemeris` on staging tables.
+- `9fc8921` Fixed duplicate slug collision during MPCORB full import.
+- `9fc8921` Fixed Horizons timestamp parser to handle Julian-calendar dates (e.g. Feb 29 in years that are not Gregorian leap years) by parsing components manually instead of using `DateTime.ParseExact`.
+- `9fc8921` Fixed search losing focus on click.
+
+### Documentation
+- `2c11a24` Updated README to reflect current schema, import commands, and data sources.
+
 ## 2026-04-25
 
 ### Added

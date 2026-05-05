@@ -1,0 +1,48 @@
+# Claude Code
+.claude/
+
+# VS Code — keep launch/tasks, ignore personal settings
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/extensions.json
+
+# Visual Studio / Rider
+.vs/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.userprefs
+*.pidb
+
+# Build output
+backend/**/bin/
+backend/**/obj/
+
+# NuGet
+*.nupkg
+*.snupkg
+**/packages/
+!**/packages/build/
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# .NET publish output
+**/publish/
+_publish/
+
+# Runtime / temp
+*.log
+*.err
+*.tmp
+*.cache
+*.lock
+
+# User secrets (never commit)
+**/secrets.json
+
+# OS
+.DS_Store
+Thumbs.db
