@@ -240,10 +240,10 @@ For IIS hosting, publish the app and point the IIS site at the published output.
 
 ## Data Sources
 
-- Planetary orbital elements are based on J2000-era values from Jean Meeus-style element tables, with ascending-node terms included for full 3D ecliptic orientation.
-- Bright-star positions and proper motions are derived from Hipparcos-style catalog data in a J2000 reference frame.
-- Dwarf-planet orientation/orbit terms such as $\omega$ and $\Omega$ are sourced from JPL small-body style data.
-- Voyager 1 and 2 trajectories are sampled from JPL Horizons output in the Solar System Barycenter, Ecliptic J2000 frame, then converted into the simulator's scene coordinates.
+- Planetary orbital elements are based on J2000-era values from [Jean Meeus, *Astronomical Algorithms*](https://www.willbell.com/math/mc1.htm)-style element tables, with ascending-node terms included for full 3D ecliptic orientation.
+- Bright-star positions and proper motions are derived from the [Hipparcos Input Catalogue](https://www.cosmos.esa.int/web/hipparcos/catalogues) in a J2000 reference frame.
+- Dwarf-planet orientation/orbit terms such as $\omega$ and $\Omega$ are sourced from the [JPL Small-Body Database](https://ssd.jpl.nasa.gov/tools/sbdb_query.html).
+- Voyager 1 and 2 trajectories are sampled from [JPL Horizons](https://ssd.jpl.nasa.gov/horizons/) output in the Solar System Barycenter, Ecliptic J2000 frame, then converted into the simulator's scene coordinates.
 - Minor planet orbital elements are sourced from the [MPC Orbit Database (MPCORB)](https://minorplanetcenter.net/iau/MPCORB.html), covering ~1.5 million numbered and unnumbered minor planets.
 - Pre-computed state vectors (position and velocity) for supported bodies are fetched from the [JPL Horizons API](https://ssd.jpl.nasa.gov/horizons/) in the Solar System Barycenter / Ecliptic J2000 frame and stored in SQL Server for fast retrieval.
 
