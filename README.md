@@ -30,6 +30,7 @@ Project layout:
 ├── index.html
 ├── js/
 │   ├── solar_system.js
+│   ├── ephemeris.js
 │   ├── voyager_trajectories.js
 │   └── three.min.js
 ├── CHANGELOG.md
@@ -86,10 +87,11 @@ The API uses `sol_reader` (read-only) at runtime. Import commands use `sol_user`
 ### Endpoints
 
 - `GET /api/health`
-- `GET /api/bodies?h_max=<magnitude>` — returns active bodies; `h_max` filters by absolute magnitude (omit for all bodies)
-- `GET /api/bodies/{slug}`
-- `GET /api/ephemeris/{bodyId}?startUtc=...&endUtc=...&limit=1440`
-- `GET /api/ephemeris/by-slug/{slug}?startUtc=...&endUtc=...&limit=1440`
+- `GET /api/bodies?h_max=<magnitude>&maxBodies=<count>` — returns active bodies with ephemeris data; `h_max` filters by absolute magnitude (omit for authoritative bodies only); `maxBodies` caps the result set
+- `GET /api/bodies/{slug}` — single body by slug
+- `GET /api/bodies/search?q=<text>&limit=<n>&namedOnly=<bool>` — full-text search used by the in-app search panel
+- `GET /api/ephemeris/window?centerUtc=...&radiusDays=...&step=<days>&h_max=<magnitude>&maxBodies=<count>` — state vectors centered on a UTC date; used by the progressive 4-stage ephemeris fetch
+- `GET /api/ephemeris/bulk?startUtc=...&endUtc=...&step=<days>&h_max=<magnitude>&maxBodies=<count>` — state vectors over an arbitrary date range
 
 ### Import Commands
 
@@ -131,11 +133,18 @@ For IIS hosting, publish the app and point the IIS site at the published output.
 ### Core simulation
 - 8 planets with axial rotation and elliptical orbits.
 - Earth includes a separate animated cloud layer with a dynamic procedural storm system.
-- 65 tracked moons across Earth, Mars, Jupiter, Saturn, Uranus, and Neptune, with explicit moon spin handling: synchronous rotation for regular/tidally evolved moons, published spin periods for several irregular moons, and special handling for cases such as Hyperion's chaotic rotation.
+- 65 tracked moons across Earth, Mars, Jupiter, Saturn, Uranus, and Neptune, with explicit moon spin handling: synchronous rotation for regular/tidally evolved moons, published spin periods for several irregular moons, and special handling for cases such as Hyperion's chaotic rotation. In real-size mode, sub-pixel moons remain visible as fixed-size glow dots.
 - 9 dwarf planets: Ceres, Pluto, Eris, Makemake, Haumea, Sedna, Gonggong, Quaoar, and Orcus.
 - 10 named comets: Halley's, Hale-Bopp, Hyakutake, Encke, 67P/Churyumov-Gerasimenko, Tempel 1, Wild 2, Shoemaker-Levy 9, NEOWISE, and Ikeya-Seki.
 - Both Voyager probes with trajectory data.
 - Dense small-body fields for the asteroid belt, Kuiper belt, scattered disc, and Oort cloud, with 15,500 simulated small-body particles in total.
+
+### Ephemeris mode
+- Toggle between **Kepler mode** (fast analytical orbits) and **Ephemeris mode** (high-precision positions from the pre-computed SQL Server database).
+- In Ephemeris mode the frontend uses a progressive 4-stage fetch: ±1 day → ±1 month → ±1 year → ±10 years, so present-day positions are available almost immediately and longer-range cache builds in the background.
+- Ephemeris coverage varies by body. Most objects have pre-computed samples spanning roughly **1600–2500 AD**; a few bodies have shorter or longer ranges depending on what JPL Horizons provides for that object.
+- Orbit lines update automatically whenever new cache data arrives, and are continuously pinned to the body's exact current position each frame so they never visibly drift.
+- The **EPH OBJECTS** slider controls how many minor-planet bodies (sorted by absolute magnitude, brightest first) are fetched from the database and rendered as real-position point particles in the scene. Drag the slider up to 8,000 to show a cloud of real asteroid/TNO positions, or down to reduce the count. Particles are only visible in Ephemeris mode.
 
 ### Sky and time
 - 130 named bright stars with spectral coloring and proper motion.
@@ -166,6 +175,8 @@ For IIS hosting, publish the app and point the IIS site at the published output.
 - Intro runs to completion before the main UI becomes interactive.
 - Built-in help overlay and keyboard shortcut guide, opened from the bottom-left help button.
 - Toggle buttons for realtime, real-size rendering, trails, orbits, constellations, look-at-Sun mode, and geo lock.
+- **KEPLER MODE / EPHEMERIS ON** toggle switches between analytical orbits and database-backed high-precision positions.
+- **EPH OBJECTS** slider (100–8,000) sets how many minor-planet positions are fetched and rendered when in Ephemeris mode.
 - Orion shortcut button (`HUNTER / ORION`) for quick sky focus.
 - Responsive mobile UI with a bottom dock and dedicated Search, Objects, Time, and Controls sheets.
 - Touch-safe mobile search, panel management, and object info behavior.
@@ -218,6 +229,7 @@ For IIS hosting, publish the app and point the IIS site at the published output.
 - Earth's axial rotation for present-day viewing is anchored to Greenwich sidereal time, so realtime illumination now lines up much more closely with actual UTC-based local daylight.
 - Moon orientation uses explicit per-moon spin handling. Regular moons default to synchronous parent-facing rotation, Earth's Moon keeps its tuned tidal-lock presentation offsets, several irregular moons use measured sidereal spin periods, and Hyperion is treated as a chaotic rotator rather than a locked body. The Moon's current orbital phase is also calibrated to a known new-moon epoch so realtime illumination is more plausible, while still remaining an analytical approximation rather than a full lunar ephemeris.
 - Voyager 1 and 2 do not use Keplerian approximations here. Their positions come from sampled JPL Horizons trajectory data in the Solar System Barycenter / Ecliptic J2000 frame and are played back with binary search plus linear interpolation between samples.
+- In Ephemeris mode, planet and dwarf-planet positions come from cubic-interpolated pre-computed state vectors rather than the analytical elements above. An anchor correction blends the boundary between Kepler and ephemeris regions so bodies transition smoothly. Orbit lines are computed over a symmetric window centered on the current simulation time, and the midpoint vertex is pinned to the body's exact scene position every frame to prevent visible drift between line refreshes.
 
 ## Data Sources
 
@@ -244,6 +256,7 @@ For IIS hosting, publish the app and point the IIS site at the published output.
 - `index.html`: app shell, UI, intro overlay, and CSS.
 - `CHANGELOG.md`: project history summarized from git commit messages.
 - `js/solar_system.js`: simulation logic, orbital math, input handling, stars, search, mobile UI wiring, and main scene behavior.
+- `js/ephemeris.js`: self-contained ephemeris system — progressive 4-stage fetch, interpolated position lookup, Kepler/ephemeris anchor correction, body search, and cache management.
 - `js/voyager_trajectories.js`: extracted Voyager trajectory dataset and playback helpers exposed to the main script.
 - `js/three.min.js`: Three.js runtime.
 - `textures/`: planetary textures, Moon texture, Saturn ring texture, Milky Way background, and intro nebula texture.
@@ -256,6 +269,8 @@ For IIS hosting, publish the app and point the IIS site at the published output.
 - Three.js
 - Vanilla JavaScript
 - HTML/CSS
+- ASP.NET Core (backend API)
+- SQL Server (ephemeris sample store)
 - NASA/JPL-style orbital element data and trajectory datasets
 - Bright star catalogue / Hipparcos-derived star data
 
