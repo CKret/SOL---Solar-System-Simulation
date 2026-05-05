@@ -62,29 +62,51 @@ GO
 
 -- ============================================================
 -- dbo.EphemerisSamples
--- SampleJd is a Julian Day Number (FLOAT) so BC dates are representable.
+-- Partitioned by SampleJd (50-year slices, 1600–2500 AD + catch-alls).
+-- Clustered on (SampleJd, BodyId) — all bodies at a given time are
+-- physically co-located, so a bulk "all bodies within date window"
+-- query hits only the relevant partition(s).
+-- Approximate JD boundaries (Jan 1 of each 50-year mark):
+--   1600 ≈ 2305445   1650 ≈ 2323707   1700 ≈ 2341970
+--   1750 ≈ 2360232   1800 ≈ 2378495   1850 ≈ 2396757
+--   1900 ≈ 2415020   1950 ≈ 2433282   2000 ≈ 2451545
+--   2050 ≈ 2469808   2100 ≈ 2488070   2150 ≈ 2506333
+--   2200 ≈ 2524595   2250 ≈ 2542858   2300 ≈ 2561120
+--   2350 ≈ 2579383   2400 ≈ 2597645   2450 ≈ 2615908
+--   2500 ≈ 2634170
+-- Partition 1  : SampleJd < 2305445   (pre-1600, BC data for authoritative bodies)
+-- Partitions 2-20: 50-year slices, 1600–2500
+-- Partition 21 : SampleJd >= 2634170  (post-2500, far-future authoritative body data)
 -- ============================================================
-CREATE TABLE dbo.EphemerisSamples (
-  EphemerisSampleId BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_EphemerisSamples PRIMARY KEY,
-  BodyId            INT          NOT NULL,
-  SampleJd          FLOAT        NOT NULL,
-  X_AU              FLOAT        NOT NULL,
-  Y_AU              FLOAT        NOT NULL,
-  Z_AU              FLOAT        NOT NULL,
-  VX_AUPerDay       FLOAT        NULL,
-  VY_AUPerDay       FLOAT        NULL,
-  VZ_AUPerDay       FLOAT        NULL,
-  Frame             NVARCHAR(64) NULL,
-  Source            NVARCHAR(64) NULL,
-  CreatedUtc        DATETIME2(0) NOT NULL CONSTRAINT DF_EphemerisSamples_CreatedUtc DEFAULT (SYSUTCDATETIME()),
-  CONSTRAINT FK_EphemerisSamples_Bodies FOREIGN KEY (BodyId) REFERENCES dbo.Bodies (BodyId),
-  CONSTRAINT UQ_EphemerisSamples_BodyJd UNIQUE (BodyId, SampleJd)
+CREATE PARTITION FUNCTION pf_EphemerisSamples_SampleJd (FLOAT)
+AS RANGE RIGHT FOR VALUES (
+  2305445, 2323707, 2341970, 2360232, 2378495,
+  2396757, 2415020, 2433282, 2451545, 2469808,
+  2488070, 2506333, 2524595, 2542858, 2561120,
+  2579383, 2597645, 2615908, 2634170
 );
 GO
 
-CREATE INDEX IX_EphemerisSamples_Body_Jd
-  ON dbo.EphemerisSamples (BodyId, SampleJd)
-  INCLUDE (X_AU, Y_AU, Z_AU, VX_AUPerDay, VY_AUPerDay, VZ_AUPerDay, Frame, Source);
+CREATE PARTITION SCHEME ps_EphemerisSamples_SampleJd
+AS PARTITION pf_EphemerisSamples_SampleJd ALL TO ([PRIMARY]);
+GO
+
+CREATE TABLE dbo.EphemerisSamples (
+  BodyId      INT           NOT NULL,
+  SampleJd    FLOAT         NOT NULL,
+  X_AU        FLOAT         NOT NULL,
+  Y_AU        FLOAT         NOT NULL,
+  Z_AU        FLOAT         NOT NULL,
+  VX_AUPerDay FLOAT         NULL,
+  VY_AUPerDay FLOAT         NULL,
+  VZ_AUPerDay FLOAT         NULL,
+  Frame       NVARCHAR(64)  NULL,
+  Source      NVARCHAR(64)  NULL,
+  CreatedUtc  DATETIME2(0)  NOT NULL DEFAULT SYSUTCDATETIME(),
+  CONSTRAINT PK_EphemerisSamples PRIMARY KEY CLUSTERED (SampleJd, BodyId)
+    ON ps_EphemerisSamples_SampleJd(SampleJd),
+  CONSTRAINT FK_EphemerisSamples_Bodies FOREIGN KEY (BodyId) REFERENCES dbo.Bodies (BodyId)
+);
 GO
 
 -- ============================================================

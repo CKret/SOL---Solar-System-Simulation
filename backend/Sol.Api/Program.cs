@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Caching.Memory;
 using Sol.Api.Models;
 using Sol.Api.Services;
 using System.Globalization;
@@ -18,6 +19,7 @@ builder.Services.AddCors(options =>
 			.AllowAnyMethod());
 });
 
+builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<ISqlConnectionFactory, SqlConnectionFactory>();
 builder.Services.AddSingleton<ISqlWriteConnectionFactory, SqlWriteConnectionFactory>();
 builder.Services.AddScoped<IEphemerisRepository, SqlServerEphemerisRepository>();
@@ -25,6 +27,8 @@ builder.Services.AddHttpClient<IAuthoritativeBodyCatalogReader, AuthoritativeBod
 builder.Services.AddHttpClient<IEphemerisSampleImporter, HorizonsEphemerisSampleImporter>();
 builder.Services.AddScoped<IBodyCatalogImporter, SqlBodyCatalogImporter>();
 builder.Services.AddHttpClient<MpcorbImporter>();
+
+builder.Logging.AddFilter("System.Net.Http.HttpClient", LogLevel.None);
 
 var app = builder.Build();
 
@@ -42,6 +46,19 @@ if (args.Length > 0 && string.Equals(args[0], "import-mpcorb", StringComparison.
 	var importer = scope.ServiceProvider.GetRequiredService<MpcorbImporter>();
 	var (inserted, updated, total) = await importer.ImportAsync(fullCatalog, CancellationToken.None);
 	Console.WriteLine($"MPCORB import complete. Total: {total:N0}, Inserted: {inserted:N0}, Updated: {updated:N0}.");
+	return;
+}
+
+if (args.Length > 0 && string.Equals(args[0], "import-retry-zeros", StringComparison.OrdinalIgnoreCase)) {
+	// import-retry-zeros [max_shrink_days]
+	// Retries all EphemerisImportLog entries with SampleCount=0, incrementally
+	// shrinking the boundary edge by 1 day at a time up to max_shrink_days.
+	// Only the edge touching EphemerisMinJD/MaxJD is shrunk. Default: 10 days.
+	var shrinkDays = args.Length > 1 && double.TryParse(args[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var s) ? s : 10.0;
+	using var scope = app.Services.CreateScope();
+	var importer = scope.ServiceProvider.GetRequiredService<IEphemerisSampleImporter>();
+	var inserted = await importer.RetryZeroSamplesAsync(shrinkDays, CancellationToken.None);
+	Console.WriteLine($"Retry complete. Inserted {inserted:N0} new samples from previously zero-sample chunks.");
 	return;
 }
 
@@ -73,8 +90,11 @@ app.MapGet("/", () => Results.Ok(new
 	endpoints = new[]
 	{
 		"/api/health",
-		"/api/bodies?h_max=<magnitude>",
+		"/api/bodies?h_max=<magnitude>&maxBodies=<count>",
+		"/api/bodies/search?q=<text>&limit=<count>&namedOnly=<bool>",
 		"/api/bodies/{slug}",
+		"/api/ephemeris/window?centerUtc=...&radiusDays=...&h_max=<magnitude>&maxBodies=<count>",
+		"/api/ephemeris/bulk?startUtc=...&endUtc=...&h_max=<magnitude>&maxBodies=<count>",
 		"/api/ephemeris/{bodyId}?startUtc=...&endUtc=...&limit=...",
 		"/api/ephemeris/by-slug/{slug}?startUtc=...&endUtc=...&limit=..."
 	}
@@ -86,9 +106,21 @@ app.MapGet("/api/health", () => Results.Ok(new
 	utc = DateTime.UtcNow
 }));
 
-app.MapGet("/api/bodies", async (double? h_max, IEphemerisRepository repository, CancellationToken cancellationToken) =>
+app.MapGet("/api/bodies", async (double? h_max, int? maxBodies, IEphemerisRepository repository, CancellationToken cancellationToken) =>
 {
-	var bodies = await repository.GetBodiesAsync(h_max, cancellationToken);
+	var bodies = await repository.GetBodiesAsync(h_max, maxBodies, cancellationToken);
+	return Results.Ok(bodies);
+});
+
+app.MapGet("/api/bodies/search", async (string? q, int? limit, bool? namedOnly, IEphemerisRepository repository, CancellationToken cancellationToken) =>
+{
+	var normalizedLimit = Math.Clamp(limit ?? 150, 1, 2000);
+	var bodies = await repository.SearchBodiesAsync(
+		q,
+		normalizedLimit,
+		true,
+		namedOnly ?? true,
+		cancellationToken);
 	return Results.Ok(bodies);
 });
 
@@ -105,6 +137,45 @@ app.MapGet("/api/ephemeris/{bodyId:int}", async (int bodyId, DateTime startUtc, 
 
 	var samples = await repository.GetSamplesByBodyIdAsync(bodyId, startUtc, endUtc, validated.Range!.Limit, cancellationToken);
 	return Results.Ok(new EphemerisRangeResponse(bodyId, null, startUtc, endUtc, samples.Count, samples));
+});
+
+app.MapGet("/api/ephemeris/window", async (DateTime centerUtc, double? radiusDays, double? h_max, int? step, int? maxBodies, IEphemerisRepository repository, IMemoryCache cache, CancellationToken cancellationToken) =>
+{
+	if (centerUtc == default)
+		return Results.BadRequest(new { error = "centerUtc is required query parameter in UTC." });
+
+	var radius = Math.Max(0.5, radiusDays ?? 1.0);
+	var startUtc = centerUtc.AddDays(-radius);
+	var endUtc = centerUtc.AddDays(radius);
+	var stride = Math.Max(1, step ?? 1);
+
+	var cacheKey = $"ephwin|{centerUtc:o}|{radius}|{h_max}|{stride}|{maxBodies}";
+	if (!cache.TryGetValue(cacheKey, out EphemerisBulkResponse? response))
+	{
+		var samples = await repository.GetBulkSamplesAsync(startUtc, endUtc, h_max, stride, maxBodies, cancellationToken);
+		response = new EphemerisBulkResponse(startUtc, endUtc, samples.Count, samples);
+		cache.Set(cacheKey, response, TimeSpan.FromHours(1));
+	}
+
+	return Results.Ok(response);
+});
+
+app.MapGet("/api/ephemeris/bulk", async (DateTime startUtc, DateTime endUtc, double? h_max, int? step, int? maxBodies, IEphemerisRepository repository, IMemoryCache cache, CancellationToken cancellationToken) =>
+{
+	if (startUtc == default || endUtc == default)
+		return Results.BadRequest(new { error = "startUtc and endUtc are required query parameters in UTC." });
+	if (endUtc < startUtc)
+		return Results.BadRequest(new { error = "endUtc must be greater than or equal to startUtc." });
+
+	var stride = Math.Max(1, step ?? 1);
+	var cacheKey = $"eph|{startUtc:o}|{endUtc:o}|{h_max}|{stride}|{maxBodies}";
+	if (!cache.TryGetValue(cacheKey, out EphemerisBulkResponse? response))
+	{
+		var samples = await repository.GetBulkSamplesAsync(startUtc, endUtc, h_max, stride, maxBodies, cancellationToken);
+		response = new EphemerisBulkResponse(startUtc, endUtc, samples.Count, samples);
+		cache.Set(cacheKey, response, TimeSpan.FromHours(1));
+	}
+	return Results.Ok(response);
 });
 
 app.MapGet("/api/ephemeris/by-slug/{slug}", async (string slug, DateTime startUtc, DateTime endUtc, int? limit, IEphemerisRepository repository, CancellationToken cancellationToken) =>
@@ -132,8 +203,8 @@ static RangeValidationResult ValidateRange(DateTime startUtc, DateTime endUtc, i
 	}
 
 	var normalizedLimit = limit ?? 1440;
-	if (normalizedLimit <= 0 || normalizedLimit > 50000) {
-		return new(null, Results.BadRequest(new { error = "limit must be between 1 and 50000." }));
+	if (normalizedLimit <= 0) {
+		return new(null, Results.BadRequest(new { error = "limit must be greater than 0." }));
 	}
 
 	return new(new ValidatedRange(normalizedLimit), null);

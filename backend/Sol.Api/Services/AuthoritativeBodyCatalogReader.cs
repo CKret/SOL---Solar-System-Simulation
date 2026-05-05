@@ -73,28 +73,10 @@ public sealed partial class AuthoritativeBodyCatalogReader : IAuthoritativeBodyC
     // - For planets/moons: parse numeric ID from header if available
     // - For spacecraft: use HorizonsCommand (negative number)
     // - For comets/asteroids: use HorizonsCommand (string)
-    string? jplId = null;
-    var headerLine = lines.FirstOrDefault(l => Regex.IsMatch(l, @"\s+\d+\s*/"));
-    if (headerLine != null)
-    {
-        var match = Regex.Match(headerLine, @"\s(\d+)\s*/");
-        if (match.Success)
-            jplId = match.Groups[1].Value;
-    }
-    // If header parse fails, fallback to HorizonsCommand
-    if (string.IsNullOrWhiteSpace(jplId))
-    {
-        // If HorizonsCommand is numeric (positive or negative), use as string
-        if (int.TryParse(target.HorizonsCommand, out _))
-        {
-            jplId = target.HorizonsCommand;
-        }
-        else
-        {
-            // For comets/asteroids, use the string designation
-            jplId = target.HorizonsCommand;
-        }
-    }
+    // Use the manifest HorizonsCommand directly as the Horizons COMMAND string.
+    // Regex-based extraction from the response was unreliable (e.g. Earth's
+    // "Flattening = 1/298.257..." line was matched, producing COMMAND='1' = Mercury).
+    string jplId = target.HorizonsCommand!;
 
     // Orbital output variables (populated later by QAdProvider and Horizons ELEMENTS fetch)
     double? aphelion = null, perihelion = null, eccentricity = null, inclination = null, semimajor = null, argperi = null, longasc = null, meananom = null, meannotion = null, period = null, epochjd = null;

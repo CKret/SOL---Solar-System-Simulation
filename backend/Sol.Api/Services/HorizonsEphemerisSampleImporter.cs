@@ -50,6 +50,7 @@ public sealed partial class HorizonsEphemerisSampleImporter(
           return;
         }
 
+        Console.WriteLine($"  → {slug}");
         try {
           await using var conn = _connectionFactory.CreateConnection();
           await conn.OpenAsync(ct);
@@ -85,6 +86,17 @@ public sealed partial class HorizonsEphemerisSampleImporter(
         }
       });
 
+    // Reset newly-completed bodies that still have zero-sample chunks so the
+    // DB count is accurate immediately after the run, and they get retried next pass.
+    var resetCount = await ResetBodiesWithZeroChunksAsync(hMax, cancellationToken);
+    if (resetCount > 0)
+      Console.WriteLine($"Reset {resetCount} bodies with zero-sample chunks (will retry next run).");
+
+    var remaining = await CountIncompleteBodiesAsync(hMax, cancellationToken);
+    Console.WriteLine(remaining > 0
+      ? $"{remaining} bodies still incomplete — run again to continue."
+      : "All target bodies complete.");
+
     return new EphemerisSampleImportResult(totalBodies, totalSamples, 0);
   }
 
@@ -96,6 +108,8 @@ public sealed partial class HorizonsEphemerisSampleImporter(
   // Fetches each missing chunk from Horizons, inserts new samples (WHERE NOT
   // EXISTS), and writes a log entry regardless of whether data was returned.
   // HTTP errors are not logged so they are retried on the next run.
+  private const int BoundaryMaxShrinkDays = 10;
+
   private async Task<int> ImportBodyChunksAsync(
       SqlConnection conn,
       int bodyId, string slug, string horizonsCommand,
@@ -105,31 +119,64 @@ public sealed partial class HorizonsEphemerisSampleImporter(
     var loggedChunks = await LoadLoggedChunksAsync(conn, bodyId, startJd, endJd, ct);
     int totalInserted = 0;
 
-    foreach (var (winStart, winEnd) in ChunkRange(startJd, endJd, step)) {
+    var allChunks  = ChunkRange(startJd, endJd, step).ToList();
+    int totalChunks = allChunks.Count;
+    int chunkIndex  = 0;
+
+    foreach (var (winStart, winEnd) in allChunks) {
+      chunkIndex++;
       if (loggedChunks.Contains((winStart, winEnd))) continue;
 
-      var requestUri = BuildHorizonsVectorsUri(horizonsCommand, winStart, winEnd, step);
-      using var response = await _httpClient.GetAsync(requestUri, ct);
+      Console.WriteLine($"    {slug} {chunkIndex}/{totalChunks} JD{winStart:F0}..JD{winEnd:F0}");
+      var fetch = await FetchAndInsertChunkAsync(conn, bodyId, slug, horizonsCommand, winStart, winEnd, step, ct);
+      if (fetch.Inserted < 0) continue; // transient HTTP error — do not log, allow retry
 
-      if (!response.IsSuccessStatusCode)
-        continue; // transient error — do not log, allow retry
+      // Use effective boundaries from the fetch (may differ from winStart/winEnd if
+      // a Horizons boundary error caused an internal adjustment).
+      var logStart = fetch.EffStart;
+      var logEnd   = fetch.EffEnd;
+      var inserted = fetch.Inserted;
 
-      await using var stream = await response.Content.ReadAsStreamAsync(ct);
-      using var doc = await System.Text.Json.JsonDocument.ParseAsync(stream, cancellationToken: ct);
+      // If a boundary chunk returned 0 samples, JPL's catalog date may be 1+ days
+      // outside what Horizons actually serves. Shrink the boundary edge 1 day at a
+      // time until data is found or we reach BoundaryMaxShrinkDays.
+      if (inserted == 0) {
+        var isFirstChunk = Math.Abs(winStart - startJd) < 0.5;
+        var isLastChunk  = Math.Abs(winEnd   - endJd)   < 0.5;
 
-      int inserted = 0;
-      if (doc.RootElement.TryGetProperty("result", out var resultEl)) {
-        var resultText = resultEl.GetString();
-        if (!string.IsNullOrEmpty(resultText) && resultText.Contains("$$SOE")) {
-          var samples = ParseHorizonsVectorCsv(bodyId, resultText, slug);
-          if (samples.Count > 0)
-            inserted = await InsertSamplesAsync(conn, samples, ct);
+        if (isFirstChunk || isLastChunk) {
+          int shrink = 1;
+          while (shrink <= BoundaryMaxShrinkDays) {
+            var retryStart = isFirstChunk ? winStart + shrink : winStart;
+            var retryEnd   = isLastChunk  ? winEnd   - shrink : winEnd;
+            if (retryStart >= retryEnd) break;
+
+            await Task.Delay(150, ct);
+            var rf = await FetchAndInsertChunkAsync(conn, bodyId, slug, horizonsCommand, retryStart, retryEnd, step, ct);
+
+            if (rf.Inserted < 0) { await Task.Delay(500, ct); continue; } // HTTP error — retry same shrink level
+            shrink++; // only advance past a confirmed result (0 = no data, >0 = data)
+
+            if (rf.Inserted == 0) continue; // Horizons confirmed no data — shrink more
+
+            // Found data — record the effective boundaries and update the stored range.
+            inserted = rf.Inserted;
+            logStart = isFirstChunk ? retryStart : winStart;
+            logEnd   = isLastChunk  ? retryEnd   : winEnd;
+            await UpdateBodyEphemerisBoundaryAsync(conn, bodyId,
+              isFirstChunk ? retryStart : null,
+              isLastChunk  ? retryEnd   : null, ct);
+            break;
+          }
+          if (inserted < 0) inserted = 0; // treat persistent HTTP errors as 0 for logging
         }
       }
 
-      // Log every attempted chunk within the valid range (0 samples = Horizons
-      // confirmed no data here, so we won't retry).
-      await LogChunkAsync(conn, bodyId, winStart, winEnd, inserted, ct);
+      // If the retry found a shorter range, delete the stale original entry before
+      // logging with the actual boundaries so the log key stays consistent.
+      if (logStart != winStart || logEnd != winEnd)
+        await DeleteLogChunkAsync(conn, bodyId, winStart, winEnd, ct);
+      await LogChunkAsync(conn, bodyId, logStart, logEnd, inserted, ct);
       totalInserted += inserted;
 
       if (winEnd < endJd)
@@ -137,6 +184,118 @@ public sealed partial class HorizonsEphemerisSampleImporter(
     }
 
     return totalInserted;
+  }
+
+  private async Task<ChunkFetchResult> FetchAndInsertChunkAsync(
+      SqlConnection conn,
+      int bodyId, string slug, string horizonsCommand,
+      double winStart, double winEnd, TimeSpan step,
+      CancellationToken ct)
+  {
+    var requestUri = BuildHorizonsVectorsUri(horizonsCommand, winStart, winEnd, step);
+    using var response = await _httpClient.GetAsync(requestUri, ct);
+
+    if (!response.IsSuccessStatusCode)
+      return new(-1, winStart, winEnd); // transient error — caller should not log, allow retry
+
+    await using var stream = await response.Content.ReadAsStreamAsync(ct);
+    using var doc = await System.Text.Json.JsonDocument.ParseAsync(stream, cancellationToken: ct);
+
+    // Horizons returns an "error" field when the request falls outside the valid
+    // ephemeris range (e.g. Pluto before 1800 or after 2200). Parse the actual
+    // boundary date, update the stored range, and retry within the valid window.
+    if (doc.RootElement.TryGetProperty("error", out var errEl)) {
+      var errText = errEl.GetString() ?? "";
+      var adjStart = winStart;
+      var adjEnd   = winEnd;
+
+      var priorM = System.Text.RegularExpressions.Regex.Match(errText,
+        @"prior to A\.D\.\s+(\d+)-([A-Z]{3})-(\d+)\s+([\d:.]+)");
+      if (priorM.Success) {
+        adjStart = ParseHorizonsErrorDateToJd(priorM);
+        await UpdateBodyEphemerisBoundaryAsync(conn, bodyId, adjStart, null, ct);
+        await DeleteOutOfRangeLogChunksAsync(conn, bodyId, adjStart, null, ct);
+      }
+
+      var afterM = System.Text.RegularExpressions.Regex.Match(errText,
+        @"after A\.D\.\s+(\d+)-([A-Z]{3})-(\d+)\s+([\d:.]+)");
+      if (afterM.Success) {
+        adjEnd = ParseHorizonsErrorDateToJd(afterM);
+        await UpdateBodyEphemerisBoundaryAsync(conn, bodyId, null, adjEnd, ct);
+        await DeleteOutOfRangeLogChunksAsync(conn, bodyId, null, adjEnd, ct);
+      }
+
+      if (adjStart < adjEnd && (adjStart > winStart || adjEnd < winEnd)) {
+        Console.WriteLine($"    {slug} boundary adjusted JD{adjStart:F0}..JD{adjEnd:F0}");
+        return await FetchAndInsertChunkAsync(conn, bodyId, slug, horizonsCommand, adjStart, adjEnd, step, ct);
+      }
+      return new(0, winStart, winEnd);
+    }
+
+    if (!doc.RootElement.TryGetProperty("result", out var resultEl)) return new(0, winStart, winEnd);
+    var resultText = resultEl.GetString();
+    if (string.IsNullOrEmpty(resultText)) return new(0, winStart, winEnd);
+
+    // Horizons returns a disambiguation list when DES= matches multiple apparition
+    // solutions (common for periodic comets). Pick the solution whose epoch year is
+    // closest to the chunk midpoint and retry with that specific record number.
+    if (resultText.Contains("To SELECT, enter record #")) {
+      var record = PickBestApparitionRecord(resultText, (winStart + winEnd) / 2.0);
+      if (record == null) return new(0, winStart, winEnd);
+      Console.WriteLine($"    {slug} → apparition record {record}");
+      return await FetchAndInsertChunkAsync(conn, bodyId, slug, $"{record};", winStart, winEnd, step, ct);
+    }
+
+    if (resultText.Contains("$$SOE")) {
+      var samples = ParseHorizonsVectorCsv(bodyId, resultText, slug);
+      if (samples.Count > 0) {
+        await InsertSamplesAsync(conn, samples, ct);
+        // Log samples.Count (what Horizons returned), not the insert delta, so the
+        // log is accurate regardless of whether data already existed in the DB.
+        return new(samples.Count, winStart, winEnd);
+      }
+    }
+
+    return new(0, winStart, winEnd);
+  }
+
+  private readonly record struct ChunkFetchResult(int Inserted, double EffStart, double EffEnd);
+
+  // Parses a date from a Horizons boundary error message such as:
+  //   "prior to A.D. 1800-JAN-02 23:59:41.3795 UT"
+  //   "after A.D. 2199-DEC-28 23:58:50.8163 UT"
+  private static double ParseHorizonsErrorDateToJd(System.Text.RegularExpressions.Match m)
+  {
+    var year  = int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
+    var month = m.Groups[2].Value switch {
+      "JAN"=>1,"FEB"=>2,"MAR"=>3,"APR"=>4,"MAY"=>5,"JUN"=>6,
+      "JUL"=>7,"AUG"=>8,"SEP"=>9,"OCT"=>10,"NOV"=>11,"DEC"=>12, _=>1
+    };
+    var day   = int.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture);
+    var parts = m.Groups[4].Value.Split(':');
+    var hour  = parts.Length > 0 ? double.Parse(parts[0], CultureInfo.InvariantCulture) : 0;
+    var min   = parts.Length > 1 ? double.Parse(parts[1], CultureInfo.InvariantCulture) : 0;
+    var sec   = parts.Length > 2 ? double.Parse(parts[2], CultureInfo.InvariantCulture) : 0;
+    return JulianDateConverter.FromCalendar(year, month, day + (hour * 3600 + min * 60 + sec) / 86400.0);
+  }
+
+  // Parses Horizons disambiguation table and returns the record number whose
+  // epoch year is closest to the given Julian Date (converted to calendar year).
+  private static string? PickBestApparitionRecord(string resultText, double midJd)
+  {
+    var midYear = 2000.0 + (midJd - 2451545.0) / 365.25;
+    string? best = null;
+    double bestDiff = double.MaxValue;
+
+    foreach (var line in resultText.Split('\n')) {
+      // Lines look like: "    90000702    2015    1000012    67P    Churyumov-Gerasimenko"
+      var m = System.Text.RegularExpressions.Regex.Match(line.Trim(), @"^(\d{5,})\s+(\d{4})\s+");
+      if (!m.Success || !int.TryParse(m.Groups[2].Value, out var year)) continue;
+      var diff = Math.Abs(year - midYear);
+      if (diff < bestDiff) { bestDiff = diff; best = m.Groups[1].Value; }
+    }
+
+    return best;
   }
 
   // -------------------------------------------------------------------------
@@ -158,8 +317,8 @@ public sealed partial class HorizonsEphemerisSampleImporter(
   private static string BuildHorizonsVectorsUri(string command, double startJd, double endJd, TimeSpan step)
   {
     var quotedCommand = Uri.EscapeDataString($"'{command}'");
-    var quotedStart   = Uri.EscapeDataString($"'{JulianDateConverter.ToHorizonsDateString(startJd)}'");
-    var quotedEnd     = Uri.EscapeDataString($"'{JulianDateConverter.ToHorizonsDateString(endJd)}'");
+    var quotedStart   = Uri.EscapeDataString($"'JD {startJd}'");
+    var quotedEnd     = Uri.EscapeDataString($"'JD {endJd}'");
     var stepHours     = Math.Max(1, (int)Math.Round(step.TotalHours, MidpointRounding.AwayFromZero));
     var quotedStep    = Uri.EscapeDataString($"'{stepHours} h'");
 
@@ -201,6 +360,197 @@ public sealed partial class HorizonsEphemerisSampleImporter(
   }
 
   // -------------------------------------------------------------------------
+  // Retry zero-sample chunks
+  // -------------------------------------------------------------------------
+
+  // Finds all EphemerisImportLog entries where SampleCount = 0 and retries each,
+  // incrementally shrinking boundary edges by 1 day at a time up to maxShrinkDays.
+  // Only the side touching EphemerisMinJD/MaxJD is shrunk — middle chunks are
+  // retried unchanged. Stops as soon as samples are returned for each chunk.
+  public async Task<int> RetryZeroSamplesAsync(double maxShrinkDays, CancellationToken ct)
+  {
+    var zeros = await LoadZeroSampleChunksAsync(ct);
+    Console.WriteLine($"Retrying {zeros.Count} zero-sample chunks (shrink up to {maxShrinkDays} day(s) on boundary edges).");
+    if (zeros.Count == 0) return 0;
+
+    // Reset CompletedEphemeris for all affected bodies so import-samples can
+    // re-evaluate them after boundaries are corrected.
+    var affectedIds = zeros.Select(z => z.BodyId).Distinct().ToList();
+    await ResetCompletedEphemerisAsync(affectedIds, ct);
+    Console.WriteLine($"Reset CompletedEphemeris=0 for {affectedIds.Count} affected bodies.");
+
+    int totalInserted = 0;
+
+    foreach (var (bodyId, slug, jplId, startJd, endJd, ephMinJd, ephMaxJd) in zeros) {
+      var isFirstChunk = Math.Abs(startJd - ephMinJd) < 0.5;
+      var isLastChunk  = Math.Abs(endJd   - ephMaxJd) < 0.5;
+
+      int inserted = 0;
+      var logStart = startJd;
+      var logEnd   = endJd;
+
+      int shrink = 1;
+      while (shrink <= (int)maxShrinkDays) {
+        var retryStart = isFirstChunk ? startJd + shrink : startJd;
+        var retryEnd   = isLastChunk  ? endJd   - shrink : endJd;
+        if (retryStart >= retryEnd) break;
+
+        var requestUri = BuildHorizonsVectorsUri(jplId, retryStart, retryEnd, TimeSpan.FromDays(1));
+        using var response = await _httpClient.GetAsync(requestUri, ct);
+        if (!response.IsSuccessStatusCode) { await Task.Delay(500, ct); continue; } // HTTP error — retry same shrink
+        shrink++; // advance only on confirmed result
+
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var doc = await System.Text.Json.JsonDocument.ParseAsync(stream, cancellationToken: ct);
+
+        if (doc.RootElement.TryGetProperty("result", out var resultEl)) {
+          var resultText = resultEl.GetString();
+          if (!string.IsNullOrEmpty(resultText) && resultText.Contains("$$SOE")) {
+            var samples = ParseHorizonsVectorCsv(bodyId, resultText, slug);
+            if (samples.Count > 0) {
+              await using var conn = _connectionFactory.CreateConnection();
+              await conn.OpenAsync(ct);
+              inserted = await InsertSamplesAsync(conn, samples, ct);
+              if (inserted > 0) {
+                logStart = isFirstChunk ? retryStart : startJd;
+                logEnd   = isLastChunk  ? retryEnd   : endJd;
+                // Replace the old log entry with one using the actual boundaries.
+                await DeleteLogChunkAsync(conn, bodyId, startJd, endJd, ct);
+                await LogChunkAsync(conn, bodyId, logStart, logEnd, inserted, ct);
+                await UpdateBodyEphemerisBoundaryAsync(conn, bodyId,
+                  isFirstChunk ? retryStart : null,
+                  isLastChunk  ? retryEnd   : null, ct);
+                Console.WriteLine($"  [{slug}] {startJd:F1}→{endJd:F1}: inserted {inserted} (shrink={(int)(shrink - 1)}d, log={logStart:F1}→{logEnd:F1}).");
+                break;
+              }
+            }
+          }
+        }
+
+        await Task.Delay(150, ct);
+      }
+
+      totalInserted += inserted;
+    }
+
+    return totalInserted;
+  }
+
+  private async Task<List<(int BodyId, string Slug, string JplId, double StartJd, double EndJd, double EphMinJd, double EphMaxJd)>>
+      LoadZeroSampleChunksAsync(CancellationToken ct)
+  {
+    const string sql = @"
+SELECT l.BodyId, b.Slug, b.JplHorizonsId, l.StartJd, l.EndJd, b.EphemerisMinJD, b.EphemerisMaxJD
+FROM dbo.EphemerisImportLog l
+INNER JOIN dbo.Bodies b ON b.BodyId = l.BodyId
+WHERE l.SampleCount = 0
+  AND b.JplHorizonsId IS NOT NULL
+  AND b.EphemerisMinJD IS NOT NULL
+  AND b.EphemerisMaxJD IS NOT NULL
+ORDER BY l.BodyId, l.StartJd;";
+
+    await using var conn = _connectionFactory.CreateConnection();
+    await conn.OpenAsync(ct);
+    await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 0 };
+    await using var reader = await cmd.ExecuteReaderAsync(ct);
+
+    var list = new List<(int, string, string, double, double, double, double)>();
+    while (await reader.ReadAsync(ct))
+      list.Add((reader.GetInt32(0), reader.GetString(1), reader.GetString(2),
+                reader.GetDouble(3), reader.GetDouble(4), reader.GetDouble(5), reader.GetDouble(6)));
+    return list;
+  }
+
+  private static async Task UpdateLogSampleCountAsync(
+      SqlConnection conn, int bodyId, double startJd, double endJd, int count, CancellationToken ct)
+  {
+    const string sql = @"
+UPDATE dbo.EphemerisImportLog
+SET SampleCount = @count
+WHERE BodyId = @bodyId AND StartJd = @startJd AND EndJd = @endJd;";
+    await using var cmd = new SqlCommand(sql, conn);
+    cmd.Parameters.AddWithValue("@bodyId",  bodyId);
+    cmd.Parameters.AddWithValue("@startJd", startJd);
+    cmd.Parameters.AddWithValue("@endJd",   endJd);
+    cmd.Parameters.AddWithValue("@count",   count);
+    await cmd.ExecuteNonQueryAsync(ct);
+  }
+
+  private async Task<int> CountIncompleteBodiesAsync(double? hMax, CancellationToken ct)
+  {
+    var hFilter = hMax.HasValue ? "AND H_AbsMag <= @hMax" : "AND Source != 'mpcorb'";
+    var sql = $@"
+SELECT COUNT(*) FROM dbo.Bodies
+WHERE IsActive = 1
+  AND CompletedEphemeris = 0
+  AND JplHorizonsId IS NOT NULL
+  AND EphemerisMinJD IS NOT NULL
+  AND EphemerisMaxJD IS NOT NULL
+  {hFilter};";
+    await using var conn = _connectionFactory.CreateConnection();
+    await conn.OpenAsync(ct);
+    await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 0 };
+    if (hMax.HasValue) cmd.Parameters.AddWithValue("@hMax", hMax.Value);
+    return Convert.ToInt32(await cmd.ExecuteScalarAsync(ct));
+  }
+
+  private async Task<int> ResetBodiesWithZeroChunksAsync(double? hMax, CancellationToken ct)
+  {
+    var hFilter = hMax.HasValue
+      ? "AND b.H_AbsMag <= @hMax"
+      : "AND b.Source != 'mpcorb'";
+    var sql = $@"
+UPDATE b SET CompletedEphemeris = 0, UpdatedUtc = SYSUTCDATETIME()
+FROM dbo.Bodies b
+WHERE b.IsActive = 1
+  AND b.CompletedEphemeris = 1
+  AND b.JplHorizonsId IS NOT NULL
+  {hFilter}
+  AND EXISTS (
+    SELECT 1 FROM dbo.EphemerisImportLog l
+    WHERE l.BodyId = b.BodyId AND l.SampleCount = 0
+  );";
+
+    await using var conn = _connectionFactory.CreateConnection();
+    await conn.OpenAsync(ct);
+    await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 0 };
+    if (hMax.HasValue) cmd.Parameters.AddWithValue("@hMax", hMax.Value);
+    return await cmd.ExecuteNonQueryAsync(ct);
+  }
+
+  private async Task ResetCompletedEphemerisAsync(IReadOnlyList<int> bodyIds, CancellationToken ct)
+  {
+    var idList = string.Join(",", bodyIds);
+    var sql = $"UPDATE dbo.Bodies SET CompletedEphemeris = 0, UpdatedUtc = SYSUTCDATETIME() WHERE IsActive = 1 AND BodyId IN ({idList});";
+    await using var conn = _connectionFactory.CreateConnection();
+    await conn.OpenAsync(ct);
+    await using var cmd = new SqlCommand(sql, conn);
+    await cmd.ExecuteNonQueryAsync(ct);
+  }
+
+  private static async Task UpdateBodyEphemerisBoundaryAsync(
+      SqlConnection conn, int bodyId, double? newMinJd, double? newMaxJd, CancellationToken ct)
+  {
+    if (newMinJd == null && newMaxJd == null) return;
+    var parts = new List<string>();
+    if (newMinJd != null) { parts.Add("EphemerisMinJD = @minJd"); parts.Add("EphemerisMinStr = @minStr"); }
+    if (newMaxJd != null) { parts.Add("EphemerisMaxJD = @maxJd"); parts.Add("EphemerisMaxStr = @maxStr"); }
+    parts.Add("UpdatedUtc = SYSUTCDATETIME()");
+    var sql = $"UPDATE dbo.Bodies SET {string.Join(", ", parts)} WHERE BodyId = @bodyId;";
+    await using var cmd = new SqlCommand(sql, conn);
+    cmd.Parameters.AddWithValue("@bodyId", bodyId);
+    if (newMinJd != null) { cmd.Parameters.AddWithValue("@minJd", newMinJd.Value); cmd.Parameters.AddWithValue("@minStr", JdToDisplayStr(newMinJd.Value)); }
+    if (newMaxJd != null) { cmd.Parameters.AddWithValue("@maxJd", newMaxJd.Value); cmd.Parameters.AddWithValue("@maxStr", JdToDisplayStr(newMaxJd.Value)); }
+    await cmd.ExecuteNonQueryAsync(ct);
+  }
+
+  private static string JdToDisplayStr(double jd)
+  {
+    var s = JulianDateConverter.ToHorizonsDateString(jd);
+    return s.StartsWith("BC ", StringComparison.Ordinal) ? "B.C. " + s[3..] : "A.D. " + s;
+  }
+
+  // -------------------------------------------------------------------------
   // Database helpers
   // -------------------------------------------------------------------------
 
@@ -210,10 +560,13 @@ public sealed partial class HorizonsEphemerisSampleImporter(
     await using var conn = _connectionFactory.CreateConnection();
     await conn.OpenAsync(ct);
 
-    // Include bodies with no H magnitude (authoritative bodies: planets, comets, probes)
-    // and bodies bright enough to pass the h_max cutoff.
-    // Require JplHorizonsId and stored epoch range so we know how to query Horizons.
-    var sql = @"
+    // When hMax is null: import only authoritative bodies (Source != 'mpcorb').
+    // MPCORB bodies can have H_AbsMag IS NULL so filtering on H alone is not reliable.
+    // When hMax is provided: import all bodies with H <= hMax regardless of source.
+    var hFilter = hMax.HasValue
+      ? "AND H_AbsMag <= @hMax"
+      : "AND Source != 'mpcorb'";
+    var sql = $@"
 SELECT BodyId, Slug, JplHorizonsId, EphemerisMinJD, EphemerisMaxJD
 FROM dbo.Bodies
 WHERE IsActive = 1
@@ -221,7 +574,7 @@ WHERE IsActive = 1
   AND JplHorizonsId IS NOT NULL
   AND EphemerisMinJD IS NOT NULL
   AND EphemerisMaxJD IS NOT NULL
-  AND (H_AbsMag IS NULL" + (hMax.HasValue ? " OR H_AbsMag <= @hMax" : "") + @")
+  {hFilter}
 ORDER BY H_AbsMag ASC, Slug;";
 
     await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 0 };
@@ -237,9 +590,11 @@ ORDER BY H_AbsMag ASC, Slug;";
   private static async Task<HashSet<(double, double)>> LoadLoggedChunksAsync(
       SqlConnection conn, int bodyId, double startJd, double endJd, CancellationToken ct)
   {
+    // Only chunks with SampleCount > 0 are treated as done.
+    // SampleCount = 0 entries are treated as gaps so they get retried.
     const string sql = @"
 SELECT StartJd, EndJd FROM dbo.EphemerisImportLog
-WHERE BodyId = @bodyId AND StartJd >= @startJd AND EndJd <= @endJd;";
+WHERE BodyId = @bodyId AND StartJd >= @startJd AND EndJd <= @endJd AND SampleCount > 0;";
 
     await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 0 };
     cmd.Parameters.AddWithValue("@bodyId",  bodyId);
@@ -253,14 +608,51 @@ WHERE BodyId = @bodyId AND StartJd >= @startJd AND EndJd <= @endJd;";
     return result;
   }
 
+  private static async Task DeleteOutOfRangeLogChunksAsync(
+      SqlConnection conn, int bodyId, double? newMinJd, double? newMaxJd, CancellationToken ct)
+  {
+    var conditions = new List<string>();
+    if (newMinJd.HasValue) conditions.Add("StartJd < @minJd");
+    if (newMaxJd.HasValue) conditions.Add("EndJd > @maxJd");
+    if (conditions.Count == 0) return;
+
+    var sql = $@"
+DELETE FROM dbo.EphemerisImportLog
+WHERE BodyId = @bodyId
+  AND ({string.Join(" OR ", conditions)});";
+
+    await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 0 };
+    cmd.Parameters.AddWithValue("@bodyId", bodyId);
+    if (newMinJd.HasValue) cmd.Parameters.AddWithValue("@minJd", newMinJd.Value);
+    if (newMaxJd.HasValue) cmd.Parameters.AddWithValue("@maxJd", newMaxJd.Value);
+    await cmd.ExecuteNonQueryAsync(ct);
+  }
+
+  private static async Task DeleteLogChunkAsync(
+      SqlConnection conn, int bodyId, double startJd, double endJd, CancellationToken ct)
+  {
+    const string sql = "DELETE FROM dbo.EphemerisImportLog WHERE BodyId = @bodyId AND StartJd = @startJd AND EndJd = @endJd;";
+    await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 0 };
+    cmd.Parameters.AddWithValue("@bodyId",  bodyId);
+    cmd.Parameters.AddWithValue("@startJd", startJd);
+    cmd.Parameters.AddWithValue("@endJd",   endJd);
+    await cmd.ExecuteNonQueryAsync(ct);
+  }
+
   private static async Task LogChunkAsync(
       SqlConnection conn, int bodyId, double startJd, double endJd, int sampleCount, CancellationToken ct)
   {
-    // IF NOT EXISTS prevents duplicate log entries (e.g. from parallel runs).
+    // MERGE upserts: updates SampleCount if the row already exists (e.g. previous zero → now has data),
+    // inserts if new. Safe because PK_EphemerisImportLog guarantees at most one target row per key.
     const string sql = @"
-IF NOT EXISTS (SELECT 1 FROM dbo.EphemerisImportLog WHERE BodyId = @bodyId AND StartJd = @startJd AND EndJd = @endJd)
-    INSERT INTO dbo.EphemerisImportLog (BodyId, StartJd, EndJd, SampleCount)
-    VALUES (@bodyId, @startJd, @endJd, @sampleCount);";
+MERGE dbo.EphemerisImportLog AS tgt
+USING (SELECT @bodyId AS BodyId, @startJd AS StartJd, @endJd AS EndJd) AS src
+  ON tgt.BodyId = src.BodyId AND tgt.StartJd = src.StartJd AND tgt.EndJd = src.EndJd
+WHEN MATCHED THEN
+  UPDATE SET SampleCount = @sampleCount, ImportedUtc = SYSUTCDATETIME()
+WHEN NOT MATCHED THEN
+  INSERT (BodyId, StartJd, EndJd, SampleCount)
+  VALUES (src.BodyId, src.StartJd, src.EndJd, @sampleCount);";
 
     await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 0 };
     cmd.Parameters.AddWithValue("@bodyId",      bodyId);
@@ -290,7 +682,7 @@ WHERE BodyId = @bodyId AND StartJd >= @minJd AND EndJd <= @maxJd;";
   private static async Task SetCompletedEphemerisAsync(
       SqlConnection conn, int bodyId, CancellationToken ct)
   {
-    const string sql = "UPDATE dbo.Bodies SET CompletedEphemeris = 1, UpdatedUtc = SYSUTCDATETIME() WHERE BodyId = @id;";
+    const string sql = "UPDATE dbo.Bodies SET CompletedEphemeris = 1, UpdatedUtc = SYSUTCDATETIME() WHERE IsActive = 1 AND BodyId = @id;";
     await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 0 };
     cmd.Parameters.AddWithValue("@id", bodyId);
     await cmd.ExecuteNonQueryAsync(ct);

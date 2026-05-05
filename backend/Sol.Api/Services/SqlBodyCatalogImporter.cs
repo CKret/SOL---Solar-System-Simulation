@@ -57,7 +57,7 @@ public sealed partial class SqlBodyCatalogImporter(
   private static async Task<Dictionary<string, int>> LoadExistingIdsAsync(SqlConnection connection, SqlTransaction transaction, CancellationToken cancellationToken)
   {
     const string sql = "SELECT BodyId, Slug FROM dbo.Bodies;";
-    await using var command = new SqlCommand(sql, connection, transaction);
+    await using var command = new SqlCommand(sql, connection, transaction) { CommandTimeout = 0 };
     await using var reader = await command.ExecuteReaderAsync(cancellationToken);
     var ids = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
     while (await reader.ReadAsync(cancellationToken))

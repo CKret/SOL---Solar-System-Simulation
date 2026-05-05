@@ -31,6 +31,7 @@ artifacts/
 
 # .NET publish output
 **/publish/
+_publish/
 
 # Runtime / temp
 *.log
