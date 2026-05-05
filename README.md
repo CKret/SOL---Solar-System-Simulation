@@ -18,6 +18,14 @@ Project layout:
 
 ```text
 .
+├── backend/
+│   └── Sol.Api/                  # ASP.NET Core ephemeris API
+│       ├── Models/
+│       ├── Services/             # Repository, importers, catalog reader
+│       ├── sql/
+│       │   └── 001_initial_schema.sql
+│       ├── Program.cs
+│       └── Sol.Api.csproj
 ├── favicon/
 │   ├── android-chrome-192x192.png
 │   ├── android-chrome-512x512.png
@@ -33,23 +41,22 @@ Project layout:
 │   ├── ephemeris.js
 │   ├── voyager_trajectories.js
 │   └── three.min.js
-├── CHANGELOG.md
-├── README.md
 ├── textures/
-│   ├── ...
-├── three.min.js
-└── trajectory/
-	├── Voyager1-Jupiter.txt
-	├── Voyager1-Saturn.txt
-	├── Voyager1.txt
-	├── Voyager2-Jupiter.txt
-	├── Voyager2-Neptune.txt
-	├── Voyager2-Saturn.txt
-	├── Voyager2-Uranus.txt
-	└── Voyager2.txt
+│   └── ...
+├── trajectory/
+│   ├── Voyager1-Jupiter.txt
+│   ├── Voyager1-Saturn.txt
+│   ├── Voyager1.txt
+│   ├── Voyager2-Jupiter.txt
+│   ├── Voyager2-Neptune.txt
+│   ├── Voyager2-Saturn.txt
+│   ├── Voyager2-Uranus.txt
+│   └── Voyager2.txt
+├── CHANGELOG.md
+└── README.md
 ```
 
-No build step is required.
+The frontend requires no build step. The backend is a standard .NET project — `dotnet run` or publish via `dotnet publish`.
 
 ## Ephemeris API
 
