@@ -2,6 +2,35 @@
 
 This changelog is derived from the project's git commit messages and is listed newest first.
 
+## 2026-05-06
+
+### Added
+- Ephemeris mode toggle (**KEPLER MODE** / **EPHEMERIS ON**) switches between fast analytical orbits and high-precision pre-computed state vectors from the database.
+- Progressive 4-stage ephemeris fetch (±1 day → ±1 month → ±1 year → ±10 years): present-day positions load almost immediately and the cache broadens in the background.
+- **EPH OBJECTS** slider (100–8,000): controls how many minor planets are fetched from the database and rendered as a real-position point-particle cloud in the scene. Bodies are sorted by absolute magnitude so the brightest/largest objects appear first.
+- `getCacheVersion()` and `getCachedBodyIds()` added to the ephemeris module so the animation loop can react to new cache data and drive the particle system.
+- Moon glow dots: each moon now has a `THREE.Points` child rendered at a fixed 3 px regardless of zoom, keeping sub-pixel moons visible in real-size mode.
+- Per-frame orbit line pin: `pinOrbitLineGeometry()` writes the planet's exact current scene position directly into the two shared midpoint vertices of the orbit line's `BufferGeometry` every frame, eliminating the visible drift-and-jump cycle between full refreshes.
+- Cache version tracking in the animation loop: any completed ephemeris fetch stage immediately triggers an orbit line refresh and a particle cloud rebuild.
+
+### Changed
+- All `fetchWindow` calls now pass `h_max = 25` so MPCORB minor planets are included in the ephemeris fetch alongside authoritative bodies.
+- EPH OBJECTS slider change now triggers a cache clear and refetch unconditionally (previously required already being in ephemeris mode).
+- Free-mode left-drag rotation direction corrected: drag axes are no longer inverted when no object is focused. Focused-orbit drag direction is unchanged.
+- Right-click roll direction corrected when an object is focused.
+- EPH OBJECTS slider value label moved to the left of the slider track; slider CSS fixed to prevent overflow outside the panel.
+
+### Fixed
+- Backend SQL filter (`GetBulkSamplesAsync`): when `h_max` is provided, non-MPCORB bodies (planets, moons, etc.) are now always included regardless of their `H_AbsMag` value; previously bodies with a NULL absolute magnitude were excluded.
+- Orbit lines in ephemeris mode no longer revert to Kepler geometry after the initial fetch stage completes.
+- Orbit lines in real-size mode no longer visibly miss planet positions due to polyline chord deviation.
+
+### Documentation
+- README updated: project layout, endpoints, ephemeris mode section, EPH OBJECTS slider, texture upgrade backlog, ephemeris epoch coverage (1600–2500 AD for most bodies), orbit line pinning accuracy note, and `js/ephemeris.js` added to main files.
+
+### Maintenance
+- `_publish/` added to `.gitignore`.
+
 ## 2026-05-04
 
 ### Added

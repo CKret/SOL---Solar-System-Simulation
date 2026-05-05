@@ -4,15 +4,15 @@ A browser-based 3D solar system and deep-time space visualizer built with Three.
 
 ## Run It
 
-Recommended for local use: run a simple static server from the project root and open `http://localhost:8000/index.html` in a modern browser.
+The full experience requires the ephemeris backend: an ASP.NET Core API backed by a SQL Server `sol_ephemeris` database populated via the import commands described in [Ephemeris API](#ephemeris-api). With the backend running, the **EPHEMERIS ON** mode provides high-precision JPL-sourced positions for all supported bodies, and the **EPH OBJECTS** slider renders a cloud of up to 8,000 real minor-planet positions in the scene. The API base path is hardcoded to `/sol-api`, matching the production IIS layout.
 
-Example:
+The frontend also runs without the backend. Serve the project root with any static file server:
 
 ```bash
 python -m http.server 8000
 ```
 
-Opening `index.html` directly may still work in some browsers, but serving the folder is the safer default.
+Open `http://localhost:8000/index.html`. Without the API the ephemeris system silently becomes a no-op: all bodies continue to move correctly using analytical Kepler orbits, but **EPHEMERIS ON** and **EPH OBJECTS** are inactive.
 
 Project layout:
 
