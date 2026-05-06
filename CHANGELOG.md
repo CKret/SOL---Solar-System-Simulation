@@ -17,7 +17,6 @@ This changelog is derived from the project's git commit messages and is listed n
 - `83b77ec` Ephemeris mode toggle (**KEPLER MODE** / **EPHEMERIS ON**) switches between fast analytical orbits and high-precision pre-computed state vectors from the database.
 - `83b77ec` Progressive 4-stage ephemeris fetch (±1 day → ±1 month → ±1 year → ±10 years): present-day positions load almost immediately and the cache broadens in the background.
 - `83b77ec` **EPH OBJECTS** slider (100–8,000): controls how many minor planets are fetched from the database and rendered as a real-position point-particle cloud in the scene. Bodies are sorted by absolute magnitude so the brightest/largest objects appear first.
-- `getCacheVersion()` and `getCachedBodyIds()` added to the ephemeris module so the animation loop can react to new cache data and drive the particle system.
 - `83b77ec` `getCacheVersion()` and `getCachedBodyIds()` added to the ephemeris module so the animation loop can react to new cache data and drive the particle system.
 - `83b77ec` Moon glow dots: each moon now has a `THREE.Points` child rendered at a fixed 3 px regardless of zoom, keeping sub-pixel moons visible in real-size mode.
 - `83b77ec` Per-frame orbit line pin: `pinOrbitLineGeometry()` writes the planet's exact current scene position directly into the two shared midpoint vertices of the orbit line's `BufferGeometry` every frame, eliminating the visible drift-and-jump cycle between full refreshes.
@@ -45,7 +44,7 @@ This changelog is derived from the project's git commit messages and is listed n
 - `98a1526` README updated: project layout, endpoints, ephemeris mode section, EPH OBJECTS slider, texture upgrade backlog, ephemeris epoch coverage (1600–2500 AD for most bodies), orbit line pinning accuracy note, and `js/ephemeris.js` added to main files.
 
 ### Maintenance
-- `_publish/` added to `.gitignore`.
+- `83b77ec` `_publish/` added to `.gitignore`.
 
 ## 2026-05-04
 
