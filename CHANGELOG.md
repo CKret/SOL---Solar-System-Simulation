@@ -5,6 +5,7 @@ This changelog is derived from the project's git commit messages and is listed n
 ## 2026-05-07
 
 ### Fixed
+- Realtime mode now stays aligned to wall-clock elapsed time even when Chromium throttles `requestAnimationFrame` for unfocused, occluded, or minimized windows.
 - `44872f0` Fixed orbit instability caused by insufficient ephemeris cadence by falling back to Kepler when sampled data is too sparse for fast-moving objects.
 
 ### Changed
