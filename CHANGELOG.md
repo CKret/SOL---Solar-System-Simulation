@@ -2,6 +2,14 @@
 
 This changelog is derived from the project's git commit messages and is listed newest first.
 
+## 2026-05-07
+
+### Fixed
+- `44872f0` Fixed orbit instability caused by insufficient ephemeris cadence by falling back to Kepler when sampled data is too sparse for fast-moving objects.
+
+### Changed
+- `44872f0` Updated ephemeris runtime behavior in `js/ephemeris.js` and `js/solar_system.js` to improve fallback handling for undersampled trajectories.
+
 ## 2026-05-06
 
 ### Added
@@ -12,6 +20,10 @@ This changelog is derived from the project's git commit messages and is listed n
 - Moon glow dots: each moon now has a `THREE.Points` child rendered at a fixed 3 px regardless of zoom, keeping sub-pixel moons visible in real-size mode.
 - Per-frame orbit line pin: `pinOrbitLineGeometry()` writes the planet's exact current scene position directly into the two shared midpoint vertices of the orbit line's `BufferGeometry` every frame, eliminating the visible drift-and-jump cycle between full refreshes.
 - Cache version tracking in the animation loop: any completed ephemeris fetch stage immediately triggers an orbit line refresh and a particle cloud rebuild.
+- `dfed319` Added ephemeris prefetch during the intro sequence.
+- `dfed319` Added proactive ephemeris prefetch when simulation time approaches the edge of the cached window.
+- `dfed319` Added updated texture set for Sun, planets, Moon, and dwarf planets, including separate Earth day/night maps.
+- `dfed319` Added Shoemaker-Levy 9 fragment rendering updates.
 
 ### Changed
 - All `fetchWindow` calls now pass `h_max = 25` so MPCORB minor planets are included in the ephemeris fetch alongside authoritative bodies.
@@ -19,6 +31,8 @@ This changelog is derived from the project's git commit messages and is listed n
 - Free-mode left-drag rotation direction corrected: drag axes are no longer inverted when no object is focused. Focused-orbit drag direction is unchanged.
 - Right-click roll direction corrected when an object is focused.
 - EPH OBJECTS slider value label moved to the left of the slider track; slider CSS fixed to prevent overflow outside the panel.
+- `dfed319` Bodies slider behavior updated around `H_AbsMag`, including showing simulated-body count for the selected threshold.
+- `dfed319` Simulated asteroid belt made feature-flag controlled now that ephemeris object rendering can represent dense real populations.
 
 ### Fixed
 - Backend SQL filter (`GetBulkSamplesAsync`): when `h_max` is provided, non-MPCORB bodies (planets, moons, etc.) are now always included regardless of their `H_AbsMag` value; previously bodies with a NULL absolute magnitude were excluded.
