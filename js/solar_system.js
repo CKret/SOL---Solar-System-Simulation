@@ -2865,7 +2865,8 @@ function updateComets() {
     cm.dustTail.visible = true;
     cm.ionTail.visible = true;
 
-    const _cometEph = (isEphemerisStableAt(simTime) && cm.ephemerisBodyId != null)
+    const cometPeriodYears = cm.orbitalPeriodYears || cm.cd.period;
+    const _cometEph = canUseBodyEphemeris(cm.ephemerisBodyId, cometPeriodYears, simTime)
       ? EphemerisSystem.getPosition(cm.ephemerisBodyId, simTime)
       : null;
     if (_cometEph) {
@@ -3158,7 +3159,7 @@ function updateProbes() {
     if (!launched) continue;
 
     // Current position from ephemeris or anchored trajectory fallback
-    const _probeEph = (isEphemerisStableAt(simTime) && pr.ephemerisBodyId != null)
+    const _probeEph = (pr.ephemerisBodyId != null)
       ? EphemerisSystem.getPosition(pr.ephemerisBodyId, simTime)
       : null;
     const pos = _probeEph
@@ -3169,7 +3170,7 @@ function updateProbes() {
 
     // Orient toward direction of travel
     const nextSimTime = simTime + 0.5;
-    const _probeNextEph = (isEphemerisStableAt(nextSimTime) && pr.ephemerisBodyId != null)
+    const _probeNextEph = (pr.ephemerisBodyId != null)
       ? EphemerisSystem.getPosition(pr.ephemerisBodyId, nextSimTime)
       : null;
     const posNext = _probeNextEph
@@ -4894,9 +4895,8 @@ const _earthTravelLocalDir = new THREE.Vector3();
 const _earthTravelMarkerBaseDir = new THREE.Vector3(0, 0, 1);
 const _earthTravelMeshQuat = new THREE.Quaternion();
 const EPHEMERIS_REFETCH_MARGIN_YEARS = 1;
-// Satellite ephemeris can desynchronize moon/parent tracks during staged cache updates.
-// Keep moons/Charon on deterministic Kepler paths until satellite ephemeris is made robust.
-const USE_SATELLITE_EPHEMERIS = false;
+const USE_SATELLITE_EPHEMERIS = true;
+const EPHEMERIS_MIN_SAMPLES_PER_ORBIT = 8;
 const ORBIT_LINE_SAMPLES = 140;
 // Flat-array offsets into the LineSegments geometry for the pin vertex (worldPts[70]).
 // createOrbitLineOutsideSun produces pairs [startXYZ, endXYZ] per segment.
@@ -4918,8 +4918,25 @@ let _smallBodyPoints  = null;
 let _predefinedEphIds = null;
 
 function isEphemerisStableAt(simYears) {
-  return !EphemerisSystem.isFetching()
-    && !EphemerisSystem.needsRefetch(simYears, EPHEMERIS_REFETCH_MARGIN_YEARS);
+  // Keep using currently cached ephemeris while refetch runs in the background.
+  return EphemerisSystem.hasCachedWindow();
+}
+
+function hasSufficientEphemerisCadence(bodyId, periodYears, atSim = simTime) {
+  if (bodyId == null) return false;
+  const periodDays = Math.abs(Number(periodYears) || 0) * 365.25;
+  if (!(periodDays > 0)) return true;
+
+  const sampleStepDays = EphemerisSystem.getLocalSampleStepDays(bodyId, atSim);
+  if (!(sampleStepDays > 0)) return false;
+
+  return sampleStepDays <= (periodDays / EPHEMERIS_MIN_SAMPLES_PER_ORBIT);
+}
+
+function canUseBodyEphemeris(bodyId, periodYears, atSim = simTime) {
+  return bodyId != null
+    && isEphemerisStableAt(atSim)
+    && hasSufficientEphemerisCadence(bodyId, periodYears, atSim);
 }
 
 function markOrbitLinesDirty() {
@@ -4927,9 +4944,28 @@ function markOrbitLinesDirty() {
   _lastOrbitLineSimTime = Number.NaN;
 }
 
-function getOrbitLineColorHex(bodyLike) {
-  const ephemerisActive = EphemerisSystem.getMode() === 'ephemeris';
-  return ephemerisActive && bodyLike?.ephemerisBodyId != null ? 0x1155aa : 0x334455;
+function isBodyUsingEphemerisNow(bodyLike, atSim = simTime) {
+  if (EphemerisSystem.getMode() !== 'ephemeris' || !bodyLike) return false;
+
+  if (bodyLike.md) {
+    if (!USE_SATELLITE_EPHEMERIS) return false;
+    return canUseBodyEphemeris(bodyLike.ephemerisBodyId, bodyLike.md.period, atSim)
+      && canUseBodyEphemeris(bodyLike.parentPlanet?.ephemerisBodyId, bodyLike.parentPlanet?.d?.period, atSim);
+  }
+
+  if (bodyLike.cd) {
+    return canUseBodyEphemeris(bodyLike.ephemerisBodyId, bodyLike.orbitalPeriodYears || bodyLike.cd.period, atSim);
+  }
+
+  if (bodyLike.d) {
+    return canUseBodyEphemeris(bodyLike.ephemerisBodyId, bodyLike.d.period, atSim);
+  }
+
+  return false;
+}
+
+function getOrbitLineColorHex(bodyLike, atSim = simTime) {
+  return isBodyUsingEphemerisNow(bodyLike, atSim) ? 0x1155aa : 0x334455;
 }
 
 function setOrbitLineGeometryFromWorldPoints(line, points, exclusionRadius = SOLAR_ORBIT_EXCLUSION_RADIUS, clipToBoundary = false) {
@@ -4955,7 +4991,7 @@ function getOrbitTimeRange(periodYears, mode) {
   return { start: simTime - half, end: simTime + half };
 }
 
-function sampleEphemerisWorldPoints(bodyId, startSim, endSim, count = ORBIT_LINE_SAMPLES, positionFallbackFn = null) {
+function sampleEphemerisWorldPoints(bodyId, periodYears, startSim, endSim, count = ORBIT_LINE_SAMPLES, positionFallbackFn = null) {
   if (bodyId == null) return null;
   
   const points = [];
@@ -4965,8 +5001,8 @@ function sampleEphemerisWorldPoints(bodyId, startSim, endSim, count = ORBIT_LINE
     const t = i / (steps - 1);
     const atSim = startSim + (endSim - startSim) * t;
     
-    // Try ephemeris first (only when cache window is stable for this sample time)
-    let pos = isEphemerisStableAt(atSim) ? EphemerisSystem.getPosition(bodyId, atSim) : null;
+    // Try ephemeris first; fall back only when this sample is not cached.
+    let pos = canUseBodyEphemeris(bodyId, periodYears, atSim) ? EphemerisSystem.getPosition(bodyId, atSim) : null;
     
     // Fallback to Kepler if ephemeris missing (hybrid mode — complete the orbit)
     if (!pos && positionFallbackFn) {
@@ -5003,10 +5039,11 @@ function sampleAnchoredKeplerWorldPoints(bodyId, positionAtTimeFn, startSim, end
 }
 
 function getMoonEphemerisLocalPosition(moon, atSim, out = new THREE.Vector3()) {
-  if (!isEphemerisStableAt(atSim)) return null;
   const moonBodyId = moon.ephemerisBodyId;
   const parentBodyId = moon.parentPlanet.ephemerisBodyId;
   if (moonBodyId == null || parentBodyId == null) return null;
+  if (!canUseBodyEphemeris(moonBodyId, moon.md.period, atSim)) return null;
+  if (!canUseBodyEphemeris(parentBodyId, moon.parentPlanet.d.period, atSim)) return null;
 
   const moonPos = EphemerisSystem.getPosition(moonBodyId, atSim);
   const parentPos = EphemerisSystem.getPosition(parentBodyId, atSim);
@@ -5094,7 +5131,7 @@ function pinCurrentPositionIntoOrbitLine(worldPts, exactPos) {
 }
 
 function getPlanetCurrentWorldPos(planet, mode) {
-  if (mode === 'ephemeris' && isEphemerisStableAt(simTime) && planet.ephemerisBodyId != null) {
+  if (mode === 'ephemeris' && canUseBodyEphemeris(planet.ephemerisBodyId, planet.d.period, simTime)) {
     const ep = EphemerisSystem.getPosition(planet.ephemerisBodyId, simTime);
     if (ep) return new THREE.Vector3(ep.x, ep.y, ep.z);
   }
@@ -5104,7 +5141,7 @@ function getPlanetCurrentWorldPos(planet, mode) {
 }
 
 function getDwarfCurrentWorldPos(dwarf, mode) {
-  if (mode === 'ephemeris' && isEphemerisStableAt(simTime) && dwarf.ephemerisBodyId != null) {
+  if (mode === 'ephemeris' && canUseBodyEphemeris(dwarf.ephemerisBodyId, dwarf.d.period, simTime)) {
     const ep = EphemerisSystem.getPosition(dwarf.ephemerisBodyId, simTime);
     if (ep) return new THREE.Vector3(ep.x, ep.y, ep.z);
   }
@@ -5199,7 +5236,9 @@ function updateEphParticlePositions() {
     const body = _smallBodyData[i];
     let p = null;
     // Use cached ephemeris data when available and in ephemeris mode
-    if (inEphMode && isEphemerisStableAt(simTime)) p = EphemerisSystem.getPosition(body.id, simTime);
+    if (inEphMode && canUseBodyEphemeris(body.id, (body.orbitalPeriod_days || 0) / 365.25, simTime)) {
+      p = EphemerisSystem.getPosition(body.id, simTime);
+    }
     // Fall back to Kepler from orbital elements
     if (!p) p = getBodyDbKeplerPosition(body, simTime);
     if (p) {
@@ -5218,7 +5257,7 @@ function refreshOrbitLines(mode) {
   for (const planet of planets) {
     const range = getOrbitTimeRange(planet.d.period, mode);
     const points = mode === 'ephemeris'
-      ? sampleEphemerisWorldPoints(planet.ephemerisBodyId, range.start, range.end, ORBIT_LINE_SAMPLES, (atSim) => getPlanetScenePositionAtTime(planet, atSim, new THREE.Vector3()))
+      ? sampleEphemerisWorldPoints(planet.ephemerisBodyId, planet.d.period, range.start, range.end, ORBIT_LINE_SAMPLES, (atSim) => getPlanetScenePositionAtTime(planet, atSim, new THREE.Vector3()))
       : null;
     const worldPts = points || sampleAnchoredKeplerWorldPoints(planet.ephemerisBodyId, (atSim) => getPlanetScenePositionAtTime(planet, atSim, new THREE.Vector3()), range.start, range.end);
     pinCurrentPositionIntoOrbitLine(worldPts, getPlanetCurrentWorldPos(planet, mode));
@@ -5229,7 +5268,7 @@ function refreshOrbitLines(mode) {
   for (const dwarf of dwarfs) {
     const range = getOrbitTimeRange(dwarf.d.period, mode);
     const points = mode === 'ephemeris'
-      ? sampleEphemerisWorldPoints(dwarf.ephemerisBodyId, range.start, range.end, ORBIT_LINE_SAMPLES, (atSim) => getDwarfScenePositionAtTime(dwarf, atSim, new THREE.Vector3()))
+      ? sampleEphemerisWorldPoints(dwarf.ephemerisBodyId, dwarf.d.period, range.start, range.end, ORBIT_LINE_SAMPLES, (atSim) => getDwarfScenePositionAtTime(dwarf, atSim, new THREE.Vector3()))
       : null;
     const worldPts = points || sampleAnchoredKeplerWorldPoints(dwarf.ephemerisBodyId, (atSim) => getDwarfScenePositionAtTime(dwarf, atSim, new THREE.Vector3()), range.start, range.end);
     pinCurrentPositionIntoOrbitLine(worldPts, getDwarfCurrentWorldPos(dwarf, mode));
@@ -5247,7 +5286,7 @@ function refreshOrbitLines(mode) {
       ? { start: simTime, end: simTime + cometPeriodYears }
       : getOrbitTimeRange(cometPeriodYears, mode);
     const points = mode === 'ephemeris'
-      ? sampleEphemerisWorldPoints(comet.ephemerisBodyId, range.start, range.end, ORBIT_LINE_SAMPLES, (atSim) => getCometWorldPositionAtTime(comet, atSim, new THREE.Vector3()))
+      ? sampleEphemerisWorldPoints(comet.ephemerisBodyId, cometPeriodYears, range.start, range.end, ORBIT_LINE_SAMPLES, (atSim) => getCometWorldPositionAtTime(comet, atSim, new THREE.Vector3()))
       : null;
     const worldPts = points || (comet.dbOrbit
       ? sampleKeplerWorldPoints((atSim) => getCometWorldPositionAtTime(comet, atSim, new THREE.Vector3()), range.start, range.end)
@@ -5258,9 +5297,9 @@ function refreshOrbitLines(mode) {
 
   // Moon orbit lines: use relative ephemeris tracks when available in ephemeris mode,
   // otherwise fall back to local Kepler geometry.
-  const moonEphemerisStable = USE_SATELLITE_EPHEMERIS && isEphemerisStableAt(simTime);
   for (const moon of moons) {
     const moonPeriod = Math.max(0.001, Math.abs(moon.md.period || 0.01));
+    const moonEphemerisStable = USE_SATELLITE_EPHEMERIS;
     const range = { start: simTime - moonPeriod * 0.5, end: simTime + moonPeriod * 0.5 };
     const ephLocalPts = (mode === 'ephemeris' && moonEphemerisStable)
       ? sampleMoonRelativeEphemerisLocalPoints(moon, range.start, range.end)
@@ -5324,9 +5363,8 @@ function animate(){
   vortexStreaks.position.z = -((sunZ * 0.22) % 2400);
 
   // ── Planet positions ───────────────────────────────────────────────────────
-  const ephemerisStableNow = isEphemerisStableAt(simTime);
   for(const p of planets){
-    const _eph = (ephemerisStableNow && p.ephemerisBodyId != null)
+    const _eph = canUseBodyEphemeris(p.ephemerisBodyId, p.d.period, simTime)
       ? EphemerisSystem.getPosition(p.ephemerisBodyId, simTime)
       : null;
     if (_eph) {
@@ -5388,7 +5426,7 @@ function animate(){
 
   // ── Dwarf planet positions ──────────────────────────────────────────────────
   for(const p of dwarfs){
-    const _eph = (ephemerisStableNow && p.ephemerisBodyId != null)
+    const _eph = canUseBodyEphemeris(p.ephemerisBodyId, p.d.period, simTime)
       ? EphemerisSystem.getPosition(p.ephemerisBodyId, simTime)
       : null;
     if (_eph) {
@@ -5402,7 +5440,8 @@ function animate(){
     p.orbitLine.visible = orbitsOn && (viewMode==='solar');
     // Charon orbits Pluto
     if (p.charon) {
-      const _charonEph = (ephemerisStableNow && USE_SATELLITE_EPHEMERIS && p.charonEphemerisBodyId != null)
+      const charonPeriodYears = p.charonPeriodYears || (Math.abs(p.d.rotPeriod) / 365.25);
+      const _charonEph = (USE_SATELLITE_EPHEMERIS && canUseBodyEphemeris(p.charonEphemerisBodyId, charonPeriodYears, simTime))
         ? EphemerisSystem.getPosition(p.charonEphemerisBodyId, simTime)
         : null;
       if (_charonEph) {
@@ -5410,16 +5449,15 @@ function animate(){
         _moonTargetWorld.set(_charonEph.x, _charonEph.y, _charonEph.z);
         p.charon.position.copy(p.mesh.worldToLocal(_moonTargetWorld));
       } else {
-        const charonPeriodYears = p.charonPeriodYears || (Math.abs(p.d.rotPeriod) / 365.25);
         const angle = ((2 * Math.PI * simTime) / charonPeriodYears) + (p.charonAngle0 ?? 0);
         const orbitRadius = p.charonOrbitRadius ?? p.visualCharonOrbitRadius ?? 0.6;
         p.charon.position.set(Math.cos(angle) * orbitRadius, 0, Math.sin(angle) * orbitRadius);
       }
     }
   }
-  const moonEphemerisStable = ephemerisStableNow && USE_SATELLITE_EPHEMERIS;
   for(const m of moons){
-    const _moonEph = (moonEphemerisStable && m.ephemerisBodyId != null)
+    const moonEphemerisStable = USE_SATELLITE_EPHEMERIS;
+    const _moonEph = (moonEphemerisStable && canUseBodyEphemeris(m.ephemerisBodyId, m.md.period, simTime))
       ? EphemerisSystem.getPosition(m.ephemerisBodyId, simTime)
       : null;
     m.moonIncGrp.position.copy(m.parentPlanet.tiltGroup.position);
@@ -5604,8 +5642,8 @@ setView('solar');
 animate();
 
 // ── Ephemeris integration ─────────────────────────────────────────────────────
-// Derives slug→bodyId mappings from the API body list — no hardcoded IDs.
-// Any sim object whose slug matches a DB body with HasEphemeris gets wired up.
+// Derives object→BodyId mappings from the API body list — no hardcoded IDs.
+// Satellites are matched by parent BodyId + slug to avoid ambiguous slug-only matches.
 function slugify(name) {
   return name.trim().toLowerCase()
     .replace(/'/g, '')
@@ -5637,6 +5675,15 @@ function slugify(name) {
     'Ikeya-Seki': 'ikeya-seki',
   };
 
+  const ephBodies = EphemerisSystem.getBodies();
+  const moonBodyByParentAndSlug = new Map();
+  for (const body of ephBodies) {
+    const bodyKind = String(body.kind || '').toLowerCase();
+    if (bodyKind !== 'moon') continue;
+    if (body.parentBodyId == null || !body.slug) continue;
+    moonBodyByParentAndSlug.set(`${body.parentBodyId}|${body.slug}`, body);
+  }
+
   // Wire every sim object that has a matching DB body
   for (const p of planets) {
     p.ephemerisBodyId = EphemerisSystem.bodyIdForSlug(p.d.slug || slugify(p.d.name)) ?? null;
@@ -5644,8 +5691,17 @@ function slugify(name) {
   for (const p of dwarfs) {
     p.ephemerisBodyId = EphemerisSystem.bodyIdForSlug(slugify(p.d.name)) ?? null;
     if (p.charon) {
-      p.charonEphemerisBodyId = EphemerisSystem.bodyIdForSlug('charon') ?? null;
-      const charonBody = EphemerisSystem.getBodyBySlug('charon');
+      let charonBody = null;
+      if (p.ephemerisBodyId != null) {
+        charonBody = moonBodyByParentAndSlug.get(`${p.ephemerisBodyId}|charon`) ?? null;
+      }
+      if (!charonBody) {
+        const fallbackCharon = EphemerisSystem.getBodyBySlug('charon');
+        if (fallbackCharon && fallbackCharon.parentBodyId === p.ephemerisBodyId) {
+          charonBody = fallbackCharon;
+        }
+      }
+      p.charonEphemerisBodyId = charonBody?.id ?? null;
       if (charonBody) {
         const periodDays = Number(charonBody.orbitalPeriod_days);
         if (Number.isFinite(periodDays) && periodDays > 0) {
@@ -5663,7 +5719,21 @@ function slugify(name) {
     }
   }
   for (const m of moons) {
-    m.ephemerisBodyId = EphemerisSystem.bodyIdForSlug(slugify(m.md.name)) ?? null;
+    const moonSlug = slugify(m.md.name);
+    const parentBodyId = m.parentPlanet.ephemerisBodyId;
+    let moonBody = null;
+    if (parentBodyId != null) {
+      moonBody = moonBodyByParentAndSlug.get(`${parentBodyId}|${moonSlug}`) ?? null;
+    }
+    if (!moonBody) {
+      const fallbackMoon = EphemerisSystem.getBodyBySlug(moonSlug);
+      if (fallbackMoon
+        && fallbackMoon.parentBodyId === parentBodyId
+        && String(fallbackMoon.kind || '').toLowerCase() === 'moon') {
+        moonBody = fallbackMoon;
+      }
+    }
+    m.ephemerisBodyId = moonBody?.id ?? null;
   }
   for (const c of comets) {
     c.ephemerisBodyId = EphemerisSystem.bodyIdForSlug(cometSlugMap[c.cd.name] || slugify(c.cd.name)) ?? null;

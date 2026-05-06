@@ -138,6 +138,24 @@ const EphemerisSystem = (() => {
     return (s0.vx != null && s1.vx != null) ? hermiteAt(s0, s1, jd) : lerpAt(s0, s1, jd);
   }
 
+  function getLocalSampleStepDays(bodyId, simTimeYears) {
+    const samples = _cache.get(bodyId);
+    if (!samples || samples.length < 2) return null;
+
+    const jd = simTimeToJd(simTimeYears);
+    let lo = 0, hi = samples.length - 1;
+
+    if (jd <= samples[lo].jd) return samples[1].jd - samples[0].jd;
+    if (jd >= samples[hi].jd) return samples[hi].jd - samples[hi - 1].jd;
+
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >>> 1;
+      if (samples[mid].jd <= jd) lo = mid; else hi = mid;
+    }
+
+    return samples[hi].jd - samples[lo].jd;
+  }
+
   // ── Fetch helpers ─────────────────────────────────────────────────────────────
   async function apiFetch(path) {
     const r = await fetch(_apiBase + path);
@@ -592,6 +610,7 @@ const EphemerisSystem = (() => {
 
     searchBodies,
     simTimeToJd,
+    getLocalSampleStepDays,
     getCacheVersion: () => _cacheVersion,
     getCachedBodyIds: () => [..._cache.keys()],
   };
