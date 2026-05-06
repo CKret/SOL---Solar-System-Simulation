@@ -34,13 +34,10 @@ const EphemerisSystem = (() => {
   const MONTH_STAGE_STEP_DAYS = 1;
   const YEAR_STAGE_STEP_DAYS = 1;
   const DECADE_STAGE_STEP_DAYS = 2;
-  const DEFAULT_MAX_BODIES = 800;
-
   // ── State ────────────────────────────────────────────────────────────────────
   let _apiBase  = 'http://localhost:5235';
   let _mode     = 'kepler';    // 'kepler' | 'ephemeris'
   let _ready    = false;
-  let _maxBodies = DEFAULT_MAX_BODIES;
   let _bodies   = [];          // raw API body list
   let _keplerPositionProvider = null;
   let _cacheVersion = 0;       // increments whenever cached data changes
@@ -158,17 +155,30 @@ const EphemerisSystem = (() => {
   }
 
   // ── Init ─────────────────────────────────────────────────────────────────────
+  async function _loadBodies(hMax) {
+    const hParam = hMax != null ? `?h_max=${hMax}` : '';
+    const raw = await apiFetch(`/api/bodies${hParam}`);
+    _slugToId.clear();
+    _bodyById.clear();
+    _bodyBySlug.clear();
+    _bodies = raw;
+    for (const b of _bodies) {
+      _slugToId.set(b.slug, b.id);
+      _bodyById.set(b.id, b);
+      _bodyBySlug.set(b.slug, b);
+    }
+    console.log(`[Ephemeris] Bodies loaded — ${_bodies.length} bodies (h_max=${hMax ?? 'none'}).`);
+  }
+
+  async function loadBodies(hMax) {
+    await _loadBodies(hMax);
+  }
+
   async function init(options = {}) {
     if (options.apiBase) _apiBase = options.apiBase;
     try {
-      _bodies = await apiFetch('/api/bodies');
-      for (const b of _bodies) {
-        _slugToId.set(b.slug, b.id);
-        _bodyById.set(b.id, b);
-        _bodyBySlug.set(b.slug, b);
-      }
+      await _loadBodies(options.hMax ?? null);
       _ready = true;
-      console.log(`[Ephemeris] Ready — ${_bodies.length} bodies loaded.`);
     } catch (e) {
       console.warn('[Ephemeris] init failed:', e.message);
     }
@@ -232,8 +242,7 @@ const EphemerisSystem = (() => {
     const startJd = centerJd - radiusDays;
     const endJd = centerJd + radiusDays;
     const hParam  = hMax != null ? `&h_max=${hMax}` : '';
-    const maxBodiesParam = _maxBodies != null ? `&maxBodies=${Math.max(1, _maxBodies|0)}` : '';
-    const url = `/api/ephemeris/window?centerUtc=${encodeURIComponent(jdToIso(centerJd))}&radiusDays=${radiusDays}&step=${step}${hParam}${maxBodiesParam}`;
+    const url = `/api/ephemeris/window?centerUtc=${encodeURIComponent(jdToIso(centerJd))}&radiusDays=${radiusDays}&step=${step}${hParam}`;
 
     console.log(`[Ephemeris] Fetching ${stageLabel} (step=${step}) centered ${jdToIso(centerJd)} radius ${radiusDays.toFixed(1)}d`);
     const data = await apiFetch(url);   // throws on HTTP error; cache unchanged
@@ -438,6 +447,33 @@ const EphemerisSystem = (() => {
     vec3.z += off.dz;
   }
 
+  function getAnchorOffset(bodyId, simTimeYears) {
+    if (bodyId == null) return null;
+    const jd = simTimeToJd(simTimeYears);
+    const boundarySide = getBoundarySide(bodyId, jd);
+    if (boundarySide) ensureBoundaryAnchor(bodyId, boundarySide);
+    return boundarySide
+      ? _boundaryAnchors.get(makeBoundaryAnchorKey(bodyId, boundarySide)) || _anchor.get(bodyId)
+      : _anchor.get(bodyId);
+  }
+
+  // Applies anchor in a relative frame: body minus reference body.
+  // Useful for satellites so local orbital spacing stays stable while the parent frame is anchored.
+  function applyRelativeAnchor(bodyId, referenceBodyId, simTimeYears, vec3) {
+    const bodyOff = getAnchorOffset(bodyId, simTimeYears);
+    const refOff = getAnchorOffset(referenceBodyId, simTimeYears);
+    if (bodyOff) {
+      vec3.x += bodyOff.dx;
+      vec3.y += bodyOff.dy;
+      vec3.z += bodyOff.dz;
+    }
+    if (refOff) {
+      vec3.x -= refOff.dx;
+      vec3.y -= refOff.dy;
+      vec3.z -= refOff.dz;
+    }
+  }
+
   // Looks up a bodyId from a slug (as returned by /api/bodies).
   function bodyIdForSlug(slug) {
     return _slugToId.get(slug) ?? null;
@@ -520,19 +556,17 @@ const EphemerisSystem = (() => {
   function isFetching()     { return _fetching; }
   function hasCachedWindow(){ return _cacheStartJd != null; }
   function getBodies()      { return _bodies; }
-  function getMaxBodies()   { return _maxBodies; }
 
-  function setMaxBodies(value) {
-    const n = Number(value);
-    if (!Number.isFinite(n)) return;
-    _maxBodies = Math.max(1, Math.floor(n));
-  }
-
-  // Returns true only when simTime leaves the last requested outer batch window.
-  function needsRefetch(simTimeYears) {
+  // Returns true when simTime is outside the window OR within a configurable
+  // edge margin, so we can prefetch before hitting the boundary.
+  function needsRefetch(simTimeYears, marginYears = 0) {
     if (_targetStartJd == null || _targetEndJd == null) return true;
     const jd = simTimeToJd(simTimeYears);
-    return jd < _targetStartJd || jd > _targetEndJd;
+    if (jd < _targetStartJd || jd > _targetEndJd) return true;
+
+    const marginJd = Math.max(0, Number(marginYears) || 0) * 365.25;
+    if (marginJd <= 0) return false;
+    return jd <= (_targetStartJd + marginJd) || jd >= (_targetEndJd - marginJd);
   }
 
   return {
@@ -542,6 +576,7 @@ const EphemerisSystem = (() => {
     getPosition,
     getTrajectory,
     applyAnchor,
+    applyRelativeAnchor,
     clearCache,
     bodyIdForSlug,
     getBodyById,
@@ -553,8 +588,8 @@ const EphemerisSystem = (() => {
     hasCachedWindow,
     needsRefetch,
     getBodies,
-    getMaxBodies,
-    setMaxBodies,
+    loadBodies,
+
     searchBodies,
     simTimeToJd,
     getCacheVersion: () => _cacheVersion,

@@ -8,8 +8,8 @@ const scene  = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(48, window.innerWidth/window.innerHeight, 0.1, 2000000);
 
 // ── Lights ────────────────────────────────────────────────────────────────────
-scene.add(new THREE.AmbientLight(0x112233, 1.8));
-const sunLight = new THREE.PointLight(0xfff4d0, 2.8, 0, 1.6);
+scene.add(new THREE.AmbientLight(0x050a14, 0.6));
+const sunLight = new THREE.PointLight(0xfff4d0, 1.2, 0, 2.0);
 scene.add(sunLight);
 
 // ── Planet data ───────────────────────────────────────────────────────────────
@@ -194,6 +194,35 @@ function keplerE(M, ecc) {
     if (Math.abs(dE) < 1e-10) break;
   }
   return E;
+}
+
+// ── Kepler position from API body orbital elements ───────────────────────────
+// Computes ecliptic scene position for a body record from /api/bodies.
+// Returns {x,y,z} in scene units or null if elements are missing/invalid.
+const _J2000_JD = 2451545.0;
+function getBodyDbKeplerPosition(body, simTimeYears) {
+  const sma_AU = body.semiMajorAxis_AU;
+  const ecc    = body.eccentricity;
+  if (!Number.isFinite(sma_AU) || sma_AU <= 0 || !Number.isFinite(ecc) || ecc >= 1 || ecc < 0) return null;
+
+  const sma      = sma_AU * EARTH_ORBIT_SCENE_RADIUS;
+  const jd       = _J2000_JD + simTimeYears * 365.25;
+  const dt_days  = jd - (body.epoch_JD ?? _J2000_JD);
+  const M_deg    = (body.meanAnomaly_deg ?? 0) + (body.meanMotion_degPerDay ?? 0) * dt_days;
+  const M_rad    = M_deg * Math.PI / 180;
+  const E        = keplerE(M_rad, ecc);
+  const nu       = 2 * Math.atan2(Math.sqrt(1 + ecc) * Math.sin(E / 2), Math.sqrt(1 - ecc) * Math.cos(E / 2));
+  const r        = sma * (1 - ecc * Math.cos(E));
+  const omega    = (body.argPerihelion_deg ?? 0) * Math.PI / 180;
+  const Omega    = (body.longAscNode_deg  ?? 0) * Math.PI / 180;
+  const inc      = (body.inclination_deg  ?? 0) * Math.PI / 180;
+  const u        = omega + nu;
+  const cO = Math.cos(Omega), sO = Math.sin(Omega);
+  const ci = Math.cos(inc),   si = Math.sin(inc);
+  const xE = r * (cO * Math.cos(u) - sO * Math.sin(u) * ci);
+  const yE = r * (sO * Math.cos(u) + cO * Math.sin(u) * ci);
+  const zE = r * Math.sin(u) * si;
+  return { x: xE, y: zE, z: -yE };  // ecliptic → scene
 }
 
 // ── Glow texture (used by stars, belts, trails) ─────────────────────────────
@@ -977,6 +1006,22 @@ function makeSaturnTex() {
     }
   });
 }
+// Builds a RingGeometry but remaps UV so u=0 is inner edge, u=1 is outer edge.
+// Needed for strip textures (like 2k_saturn_ring_alpha.png) which are 1D radial.
+function makeRadialRingGeometry(innerR, outerR, radialSegments, tubularSegments = 1) {
+  const geo = new THREE.RingGeometry(innerR, outerR, radialSegments, tubularSegments);
+  const pos = geo.attributes.position;
+  const uv  = geo.attributes.uv;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i);
+    const r = Math.sqrt(x * x + y * y);
+    const u = (r - innerR) / (outerR - innerR);
+    uv.setXY(i, u, 0.5);
+  }
+  uv.needsUpdate = true;
+  return geo;
+}
+
 function makeSaturnRingTex() {
   // 2D radial gradient — matches Three.js RingGeometry UV (center=inner, edge=outer).
   // Linear gradients cause cross-banding because UVs are circular, not linear.
@@ -1137,17 +1182,23 @@ function loadSwap(urls, onLoad) {
 }
 
 const PHOTO_URLS = {
-  sun:     ['textures/sun.jpg'],
-  moon:    ['textures/moon.jpg'],
-  MERCURY: ['textures/mercury.jpg'],
-  VENUS:   ['textures/venus.jpg'],
-  EARTH:   ['textures/earth.jpg'],
-  MARS:    ['textures/mars.jpg'],
-  JUPITER: ['textures/jupiter.jpg'],
-  SATURN:  ['textures/saturn.jpg'],
-  URANUS:  ['textures/uranus.jpg'],
-  NEPTUNE: ['textures/neptune.jpg'],
-  saturnRing: ['textures/saturn_ring.png'],
+  sun:      ['textures/2k_sun.jpg',              'textures/sun.jpg'],
+  moon:     ['textures/2k_moon.jpg',             'textures/moon.jpg'],
+  MERCURY:  ['textures/2k_mercury.jpg',          'textures/mercury.jpg'],
+  VENUS:    ['textures/2k_venus_atmosphere.jpg', 'textures/venus.jpg'],
+  EARTH:    ['textures/2k_earth_daymap.jpg',     'textures/earth.jpg'],
+  MARS:     ['textures/2k_mars.jpg',             'textures/mars.jpg'],
+  JUPITER:  ['textures/2k_jupiter.jpg',          'textures/jupiter.jpg'],
+  SATURN:   ['textures/2k_saturn.jpg',           'textures/saturn.jpg'],
+  URANUS:   ['textures/2k_uranus.jpg',           'textures/uranus.jpg'],
+  NEPTUNE:  ['textures/2k_neptune.jpg',          'textures/neptune.jpg'],
+  saturnRing: ['textures/2k_saturn_ring_alpha.png', 'textures/saturn_ring.png'],
+  // Dwarf planets
+  CERES:    ['textures/2k_ceres_fictional.jpg'],
+  PLUTO:    ['textures/2k_pluto.jpg'],
+  ERIS:     ['textures/2k_eris_fictional.jpg'],
+  HAUMEA:   ['textures/2k_haumea_fictional.jpg'],
+  MAKEMAKE: ['textures/2k_makemake_fictional.jpg'],
 };
 
 // meshes registered after planet creation, so we defer the swap
@@ -1392,7 +1443,41 @@ for (const d of PD) {
   // Planet sphere — textured, inside a tiltGroup that orients the spin axis correctly
   const tex = PLANET_TEX[d.name];
   const mat = d.name === 'EARTH'
-    ? new THREE.MeshPhongMaterial({ map:tex, specular:0x000000, shininess:0 })
+    ? new THREE.ShaderMaterial({
+        uniforms: {
+          dayMap:   { value: tex },
+          nightMap: { value: tex }, // replaced when night texture loads
+          sunDir:   { value: new THREE.Vector3(1, 0, 0) },
+          opacity:  { value: 1.0 },
+        },
+        vertexShader: `
+          varying vec3 vWorldNormal;
+          varying vec2 vUv;
+          void main() {
+            vWorldNormal = normalize(mat3(modelMatrix) * normal);
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform sampler2D dayMap;
+          uniform sampler2D nightMap;
+          uniform vec3 sunDir;
+          uniform float opacity;
+          varying vec3 vWorldNormal;
+          varying vec2 vUv;
+          void main() {
+            float d = dot(normalize(vWorldNormal), normalize(sunDir));
+            float t = smoothstep(-0.30, 0.20, d);
+            vec3 dayRgb   = texture2D(dayMap,   vUv).rgb;
+            vec3 nightRgb = texture2D(nightMap, vUv).rgb;
+            float diffuse = 0.22 + 0.78 * clamp(d, 0.0, 1.0);
+            vec3 col = mix(nightRgb * 1.5, dayRgb * diffuse, t);
+            gl_FragColor = vec4(col, opacity);
+          }
+        `,
+        transparent: true,
+      })
     : new THREE.MeshPhongMaterial({ map:tex, shininess: d.name==='JUPITER'||d.name==='SATURN' ? 8 : 15 });
   const mesh = new THREE.Mesh(new THREE.SphereGeometry(d.r, 40, 40), mat);
   if (d.name === 'EARTH') {
@@ -1749,7 +1834,13 @@ self.onmessage=function(e){
   incGrp.add(tiltGroup);
 
   // Queue real photo texture swap (fires when loaded, keeps procedural until then)
-  queuePhotoSwap(d.name, () => mat);
+  if (d.name === 'EARTH') {
+    // Earth uses custom day/night shader — load both maps directly into uniforms
+    loadSwap(['textures/2k_earth_daymap.jpg', 'textures/earth.jpg'], t => { mat.uniforms.dayMap.value = t; });
+    loadSwap(['textures/2k_earth_nightmap.jpg'], t => { mat.uniforms.nightMap.value = t; });
+  } else {
+    queuePhotoSwap(d.name, () => mat);
+  }
 
   // Rings
   let ringMat = null;
@@ -1770,7 +1861,8 @@ self.onmessage=function(e){
         depthWrite: false,
       });
       // Full ring disc: D ring inner (1.11r) to beyond F ring (2.34r)
-      const ring = new THREE.Mesh(new THREE.RingGeometry(d.r*1.11, d.r*2.34, 256, 1), ringMat);
+      // Uses radial UV geometry so strip photo textures map correctly (u=inner→outer).
+      const ring = new THREE.Mesh(makeRadialRingGeometry(d.r*1.11, d.r*2.34, 256, 1), ringMat);
       ring.rotation.x = Math.PI / 2;
       ringGrp.add(ring);
       queuePhotoSwap('saturnRing', () => ringMat);
@@ -2137,10 +2229,15 @@ const moons = [];
 for (const md of MOON_DATA) {
   const parentPlanet = planets.find(p => p.d.name === md.planet);
   if (!parentPlanet) continue;
+  // MOON_DATA sma values are authored around a host radius of ~1 scene unit.
+  // Scale up for large hosts in visual mode so moon orbits don't collapse into rings/discs.
+  const visualOrbitScale = Math.max(1, parentPlanet.d.r);
+  const visualOrbitSma = md.sma * visualOrbitScale;
   const diameterKm = MOON_DIAMETER_KM[md.name] ?? null;
   const realOrbitSmaKm = MOON_SMA_KM[md.name] ?? null;
   const realOrbitSma = Number.isFinite(realOrbitSmaKm) ? getSceneDistanceFromKm(realOrbitSmaKm) : md.sma;
-  const { b, c } = getEllipseAxes(md.sma, md.ecc);
+  
+  const { b, c } = getEllipseAxes(visualOrbitSma, md.ecc);
 
   // Moon lives in an inclined group parented to the planet's incGrp (not mesh)
   // so the planet's axial rotation doesn't carry the moon around with it
@@ -2150,7 +2247,7 @@ for (const md of MOON_DATA) {
 
   // Orbit ring (visible in solar mode when zoomed in)
   const moonOrbitLine = new THREE.Line(
-    new THREE.BufferGeometry().setFromPoints(createMoonOrbitPoints(md.sma, md.ecc)),
+    new THREE.BufferGeometry().setFromPoints(createMoonOrbitPoints(visualOrbitSma, md.ecc)),
     new THREE.LineBasicMaterial({ color:0x334455, transparent:true, opacity:0.35 })
   );
   moonIncGrp.add(moonOrbitLine);
@@ -2183,20 +2280,22 @@ for (const md of MOON_DATA) {
     (0.5 - spinSeed) * 0.35,
   );
 
-  moons.push({
+  const moonObj = {
     md: diameterKm ? { ...md, diameter: formatDiameterKm(diameterKm) } : md,
     moonMesh, moonDot, moonIncGrp, moonOrbitLine,
     parentPlanet,
-    visualOrbitSma: md.sma,
+    visualOrbitSma,
     realOrbitSma,
-    orbitSma: md.sma,
+    orbitSma: visualOrbitSma,
     b, c,
     realSizeScale: getRealSizeScale(md.r, null, diameterKm),
     angle0: THREE.MathUtils.degToRad(md.phaseDeg ?? 0),
     spinModel,
     spinSeed,
     baseRotation,
-  });
+  };
+
+  moons.push(moonObj);
 }
 
 // ── Dwarf planets ─────────────────────────────────────────────────────────────
@@ -2253,6 +2352,15 @@ for (const d of DWARF_DATA) {
   dwarfs.push({ d, incGrp, mesh, orbitLine, b, c, realSizeScale: getRealSizeScale(d.r, d.diameter), angle0: ((d.L0-(d.omega||0)) * Math.PI / 180) });
 }
 
+// Apply photo textures to dwarf planets that have them
+for (const dw of dwarfs) {
+  const key = dw.d.name;
+  if (PHOTO_URLS[key]) {
+    const _dwMesh = dw.mesh;
+    queuePhotoSwap(key, () => _dwMesh.material);
+  }
+}
+
 // Pluto's moon Charon
 {
   const pluto = dwarfs.find(d=>d.d.name==='PLUTO');
@@ -2282,6 +2390,7 @@ for (const d of DWARF_DATA) {
 // ── Orbiting asteroid/TNO belts ───────────────────────────────────────────────
 // Each particle orbits with its own period from Kepler's 3rd law: period = (sma/32)^1.5 years
 // Positions recomputed each frame from simTime — inner particles faster, outer slower.
+const ENABLE_SIMULATED_BELTS = false;
 const beltMat = new THREE.ShaderMaterial({
   uniforms: {},
   vertexShader: `
@@ -2350,6 +2459,10 @@ function makeOrbitingBelt(count, smaMin, smaMax, incMax, color, opacity, size, a
 const mainBelt      = makeOrbitingBelt(6000,   70,  102,   4, 0xAA9977, 0.55, 0.35);
 const kuiperBelt    = makeOrbitingBelt(4000,  990, 1620,   8, 0x8899AA, 0.28, 0.30);
 const scatteredDisc = makeOrbitingBelt(1500, 1220, 2250,  35, 0x667788, 0.22, 0.28);
+
+mainBelt.pts.visible = ENABLE_SIMULATED_BELTS;
+kuiperBelt.pts.visible = ENABLE_SIMULATED_BELTS;
+scatteredDisc.pts.visible = ENABLE_SIMULATED_BELTS;
 
 // Oort cloud — true spherical shell, not a disc
 // Each particle orbits with random inclination — very slow (periods of millions of years)
@@ -2544,6 +2657,23 @@ function isCometOrbitVisibleAtTime(cm, time = simTime) {
 // Tail geometry: series of points streaming away from Sun
 const TAIL_PTS = 120;
 
+function createSl9Fragments(incGrp, baseRadius, color) {
+  const fragments = [];
+  const count = 12;
+  for (let i = 0; i < count; i++) {
+    const sizeScale = 0.36 + ((count - i) / count) * 0.26;
+    const mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(baseRadius * sizeScale, 10, 10),
+      new THREE.MeshPhongMaterial({ color, emissive: color, emissiveIntensity: 0.28, shininess: 4 })
+    );
+    mesh.visible = false;
+    mesh.userData.fragmentIndex = i;
+    incGrp.add(mesh);
+    fragments.push(mesh);
+  }
+  return fragments;
+}
+
 const comets = [];
 for (const cd of COMET_DATA) {
   const diameterKm = COMET_NUCLEUS_DIAMETER_KM[cd.name] ?? null;
@@ -2626,6 +2756,7 @@ for (const cd of COMET_DATA) {
     incGrp, nucleus, orbitLine,
     dustTail, dustGeo, dustPos, dustCol, dustSiz,
     ionTail,  ionGeo,  ionPos,  ionCol,  ionSiz,
+    fragments: cd.name === 'Shoemaker-Levy 9' ? createSl9Fragments(incGrp, cd.r, cd.color) : null,
     realSizeScale: getRealSizeScale(cd.r, null, diameterKm),
     b, c, orbitEcc: visualOrbit.ecc,
     angle0: hashNameToUnit(cd.name) * Math.PI * 2,
@@ -2635,8 +2766,9 @@ for (const cd of COMET_DATA) {
 }
 
 // Update comet positions and tails
-const _cometWPos  = new THREE.Vector3();
-const _sunWPos2   = new THREE.Vector3();
+const _cometWPos      = new THREE.Vector3();
+const _sunWPos2       = new THREE.Vector3();
+const _earthSunDirTmp = new THREE.Vector3();
 const _cometToSun = new THREE.Vector3();
 const _cometAwayFromSun = new THREE.Vector3();
 const _cometTailRight = new THREE.Vector3();
@@ -2647,6 +2779,8 @@ const _jupiterPos = new THREE.Vector3();
 const _jupiterPosWorld = new THREE.Vector3();
 const _jupiterPosLocal = new THREE.Vector3();
 const _sl9ApproachDir = new THREE.Vector3();
+const _sl9FragmentDir = new THREE.Vector3();
+const _sl9FragmentSide = new THREE.Vector3();
 
 function getCometLocalPosition(cm, timeYears, out = new THREE.Vector3()) {
   const orbitalPeriodYears = cm.orbitalPeriodYears || cm.cd.period;
@@ -2716,6 +2850,9 @@ function updateComets() {
       cm.orbitLine.visible = false;
       cm.nucleus.visible = false;
       cm.nucleus.userData.coma.visible = false;
+      if (cm.fragments) {
+        for (const frag of cm.fragments) frag.visible = false;
+      }
       cm.dustTail.visible = false;
       cm.ionTail.visible = false;
       cm.dustGeo.setDrawRange(0, 0);
@@ -2728,7 +2865,9 @@ function updateComets() {
     cm.dustTail.visible = true;
     cm.ionTail.visible = true;
 
-    const _cometEph = cm.ephemerisBodyId != null ? EphemerisSystem.getPosition(cm.ephemerisBodyId, simTime) : null;
+    const _cometEph = (isEphemerisStableAt(simTime) && cm.ephemerisBodyId != null)
+      ? EphemerisSystem.getPosition(cm.ephemerisBodyId, simTime)
+      : null;
     if (_cometEph) {
       cm.incGrp.updateWorldMatrix(true, false);
       _cometWorldPos.set(_cometEph.x, _cometEph.y, _cometEph.z);
@@ -2741,6 +2880,44 @@ function updateComets() {
     }
     cm.orbitLine.material.color.setHex(getOrbitLineColorHex(cm));
     cm.orbitLine.visible = isCometOrbitVisibleAtTime(cm) && orbitsOn && (viewMode === 'solar');
+
+    if (cm.fragments) {
+      const showFragments = isCometOnTerminalApproach(cm);
+      if (showFragments && jupiterPlanet) {
+        getPlanetScenePositionAtTime(jupiterPlanet, simTime, _jupiterPos);
+        _jupiterPosWorld.copy(_jupiterPos);
+        solarPivot.localToWorld(_jupiterPosWorld);
+        _jupiterPosLocal.copy(_jupiterPosWorld);
+        cm.incGrp.worldToLocal(_jupiterPosLocal);
+
+        _sl9FragmentDir.copy(_jupiterPosLocal).sub(cm.nucleus.position);
+        if (_sl9FragmentDir.lengthSq() < 1e-12) _sl9FragmentDir.set(1, 0, 0);
+        else _sl9FragmentDir.normalize();
+
+        _sl9FragmentSide.set(-_sl9FragmentDir.z, 0, _sl9FragmentDir.x);
+        if (_sl9FragmentSide.lengthSq() < 1e-12) _sl9FragmentSide.set(0, 0, 1);
+        else _sl9FragmentSide.normalize();
+
+        const startSimTime = COMET_APPROACH_START_SIM_TIME[cm.cd.name];
+        const endSimTime = COMET_END_SIM_TIME[cm.cd.name];
+        const approachT = THREE.MathUtils.clamp((simTime - startSimTime) / Math.max(1e-9, endSimTime - startSimTime), 0, 1);
+        const compressed = 1 - (approachT * approachT);
+
+        for (let i = 0; i < cm.fragments.length; i++) {
+          const frag = cm.fragments[i];
+          frag.visible = true;
+          const chain = (i + 1) / cm.fragments.length;
+          const behind = (cm.cd.r * (2.6 + chain * 8.8)) * compressed;
+          const lateral = (Math.sin(chain * 12.7) * 0.18 + (chain - 0.5) * 0.55) * cm.cd.r * compressed;
+          frag.position.copy(cm.nucleus.position)
+            .addScaledVector(_sl9FragmentDir, -behind)
+            .addScaledVector(_sl9FragmentSide, lateral);
+        }
+      } else {
+        for (const frag of cm.fragments) frag.visible = false;
+      }
+    }
+
     // Get world position of nucleus
     cm.nucleus.getWorldPosition(_cometWPos);
 
@@ -2981,7 +3158,9 @@ function updateProbes() {
     if (!launched) continue;
 
     // Current position from ephemeris or anchored trajectory fallback
-    const _probeEph = pr.ephemerisBodyId != null ? EphemerisSystem.getPosition(pr.ephemerisBodyId, simTime) : null;
+    const _probeEph = (isEphemerisStableAt(simTime) && pr.ephemerisBodyId != null)
+      ? EphemerisSystem.getPosition(pr.ephemerisBodyId, simTime)
+      : null;
     const pos = _probeEph
       ? _probePosCurrent.set(_probeEph.x, _probeEph.y, _probeEph.z)
       : getProbeScenePositionAtTime(pr, simTime, _probePosCurrent);
@@ -2990,7 +3169,9 @@ function updateProbes() {
 
     // Orient toward direction of travel
     const nextSimTime = simTime + 0.5;
-    const _probeNextEph = pr.ephemerisBodyId != null ? EphemerisSystem.getPosition(pr.ephemerisBodyId, nextSimTime) : null;
+    const _probeNextEph = (isEphemerisStableAt(nextSimTime) && pr.ephemerisBodyId != null)
+      ? EphemerisSystem.getPosition(pr.ephemerisBodyId, nextSimTime)
+      : null;
     const posNext = _probeNextEph
       ? _probePosNext.set(_probeNextEph.x, _probeNextEph.y, _probeNextEph.z)
       : getProbeScenePositionAtTime(pr, nextSimTime, _probePosNext);
@@ -3172,6 +3353,8 @@ const SUN_REAL_SIZE_SCALE = getRealSizeScale(4.5, null, SUN_DIAMETER_KM);
 let realtimeMode = false;
 let realSizeMode = false;
 let followNowMode = false;
+let keplerAnchorProvider = null;
+let anchorRefreshSeq = 0;
 
 function getMoonRenderScale(moon) {
   if (!realSizeMode) return 1;
@@ -3307,6 +3490,18 @@ function applyRealSizeMode() {
     if (!focusTransitioning) camR = targetR;
   }
 
+  // Kepler anchor offsets are computed in scene units from the active size model.
+  // Rebuild them when switching real-size mode so ephemeris anchoring stays consistent.
+  if (keplerAnchorProvider && EphemerisSystem.isReady()) {
+    const seq = ++anchorRefreshSeq;
+    Promise.resolve(EphemerisSystem.fetchAnchor(simTime, keplerAnchorProvider))
+      .then(() => {
+        if (seq !== anchorRefreshSeq) return;
+        markOrbitLinesDirty();
+      })
+      .catch(() => {});
+  }
+
   markOrbitLinesDirty();
 }
 
@@ -3321,51 +3516,84 @@ realSizeBtn?.addEventListener('click', toggleRealSizeMode);
 const ephemerisBtn = document.getElementById('ephemeris-btn');
 const objectCountSlider = document.getElementById('objects-count-slider');
 const objectCountValue = document.getElementById('objects-count-value');
-const OBJECT_COUNT_STORAGE_KEY = 'sol.ephemeris.maxBodies';
+const objectCountLabel = document.getElementById('objects-count-label');
+const EPHEMERIS_H_STORAGE_KEY = 'sol.ephemeris.hAbsMagMax';
+let ephemerisHAbsMagMax = 12;
+let introPrefetchStarted = false;
 
-function clampObjectCount(value) {
+function clampEphemerisH(value) {
   const n = Number(value);
-  if (!Number.isFinite(n)) return 800;
-  return Math.max(100, Math.min(8000, Math.round(n / 100) * 100));
+  if (!Number.isFinite(n)) return 12;
+  return Math.max(0, Math.min(25, Math.round(n)));
 }
 
-function getSelectedObjectCount() {
-  if (!objectCountSlider) return 800;
-  return clampObjectCount(objectCountSlider.value);
+function getSelectedEphemerisH() {
+  if (!objectCountSlider) return 12;
+  return clampEphemerisH(objectCountSlider.value);
 }
 
-function syncObjectCountUi(value) {
-  if (!objectCountSlider || !objectCountValue) return;
-  const count = clampObjectCount(value);
-  objectCountSlider.value = String(count);
-  objectCountValue.textContent = count.toLocaleString();
+function syncEphemerisFilterUi(hValue) {
+  if (!objectCountSlider) return;
+  const h = clampEphemerisH(hValue);
+  objectCountSlider.value = String(h);
+  if (objectCountLabel) objectCountLabel.textContent = `EPH H <= ${h}`;
 }
 
-function applyObjectCountToEphemerisSystem(value, refetchIfActive = false) {
-  const count = clampObjectCount(value);
-  EphemerisSystem.setMaxBodies(count);
-  if (refetchIfActive && EphemerisSystem.isReady()) {
-    EphemerisSystem.clearCache();
-    Promise.resolve(EphemerisSystem.fetchWindow(simTime - 10, simTime + 10, 25)).finally(markOrbitLinesDirty);
-  }
+function syncEphemerisObjectCount() {
+  if (!objectCountValue) return;
+  // Count: authoritative bodies (H IS NULL) + all bodies with H <= threshold
+  const n = EphemerisSystem.getBodies().filter(b => b.h_AbsMag == null || b.h_AbsMag <= ephemerisHAbsMagMax).length;
+  objectCountValue.textContent = n.toLocaleString();
+}
+
+function fetchEphemerisWindow(startSim, endSim) {
+  return Promise.resolve(EphemerisSystem.fetchWindow(startSim, endSim, ephemerisHAbsMagMax))
+    .finally(() => {
+      syncEphemerisObjectCount();
+      markOrbitLinesDirty();
+    });
+}
+
+function startIntroEphemerisPrefetch() {
+  if (introPrefetchStarted || !EphemerisSystem.isReady()) return;
+  introPrefetchStarted = true;
+  fetchEphemerisWindow(simTime - 10, simTime + 10).catch(() => {});
 }
 
 (() => {
-  const storedRaw = localStorage.getItem(OBJECT_COUNT_STORAGE_KEY);
-  const initialCount = storedRaw != null ? clampObjectCount(storedRaw) : getSelectedObjectCount();
-  syncObjectCountUi(initialCount);
-  applyObjectCountToEphemerisSystem(initialCount, false);
+  const storedRaw = localStorage.getItem(EPHEMERIS_H_STORAGE_KEY);
+  const initialH = storedRaw != null ? clampEphemerisH(storedRaw) : getSelectedEphemerisH();
+  ephemerisHAbsMagMax = initialH;
+  syncEphemerisFilterUi(initialH);
+  syncEphemerisObjectCount();
 })();
 
 objectCountSlider?.addEventListener('input', () => {
-  syncObjectCountUi(objectCountSlider.value);
+  const h = clampEphemerisH(objectCountSlider.value);
+  ephemerisHAbsMagMax = h;
+  syncEphemerisFilterUi(h);
+  syncEphemerisObjectCount();
 });
 
 objectCountSlider?.addEventListener('change', () => {
-  const count = getSelectedObjectCount();
-  syncObjectCountUi(count);
-  localStorage.setItem(OBJECT_COUNT_STORAGE_KEY, String(count));
-  applyObjectCountToEphemerisSystem(count, true);
+  const h = getSelectedEphemerisH();
+  ephemerisHAbsMagMax = h;
+  syncEphemerisFilterUi(h);
+  localStorage.setItem(EPHEMERIS_H_STORAGE_KEY, String(h));
+  if (EphemerisSystem.isReady()) {
+    EphemerisSystem.clearCache();
+    EphemerisSystem.loadBodies(h).then(() => {
+      syncEphemerisObjectCount();
+      rebuildEphParticles();
+      fetchEphemerisWindow(simTime - 10, simTime + 10).catch(() => {});
+    }).catch((err) => {
+      console.warn('[Ephemeris] loadBodies failed:', err?.message || err);
+      syncEphemerisObjectCount();
+      rebuildEphParticles();
+    });
+  } else {
+    rebuildEphParticles();
+  }
 });
 
 function syncEphemerisUi() {
@@ -3381,11 +3609,10 @@ ephemerisBtn?.addEventListener('click', () => {
   EphemerisSystem.setMode(next);
   markOrbitLinesDirty();
   syncEphemerisUi();
-  if (next === 'ephemeris' && EphemerisSystem.isReady() && !EphemerisSystem.hasCachedWindow()) {
-    Promise.resolve(EphemerisSystem.fetchWindow(simTime - 10, simTime + 10, 25)).finally(markOrbitLinesDirty);
-  } else if (next === 'kepler') {
-    EphemerisSystem.clearCache();
+  if (EphemerisSystem.isReady() && !EphemerisSystem.hasCachedWindow()) {
+    fetchEphemerisWindow(simTime - 10, simTime + 10).catch(() => {});
   }
+  syncEphemerisObjectCount();
 });
 
 // ── Timeline slider ───────────────────────────────────────────────────────────
@@ -4659,10 +4886,16 @@ const _camOffset = new THREE.Vector3();
 const _camLookDir = new THREE.Vector3();
 const _moonTargetWorld = new THREE.Vector3();
 const _moonLocalPos = new THREE.Vector3();
+const _moonRelWorld = new THREE.Vector3();
+const _moonBasisQ = new THREE.Quaternion();
+const _moonBasisInvQ = new THREE.Quaternion();
 const _earthTravelWorldDir = new THREE.Vector3(0, 0, 1);
 const _earthTravelLocalDir = new THREE.Vector3();
 const _earthTravelMarkerBaseDir = new THREE.Vector3(0, 0, 1);
 const _earthTravelMeshQuat = new THREE.Quaternion();
+const EPHEMERIS_REFETCH_MARGIN_YEARS = 1;
+// Satellite ephemeris can desynchronize moon/parent tracks during staged cache updates.
+// Keep moons/Charon on deterministic Kepler paths until satellite ephemeris is made robust.
 const USE_SATELLITE_EPHEMERIS = false;
 const ORBIT_LINE_SAMPLES = 140;
 // Flat-array offsets into the LineSegments geometry for the pin vertex (worldPts[70]).
@@ -4679,7 +4912,15 @@ let _ephParticleCacheVersion = -1;
 let _ephParticleBodyIds = [];
 let _ephParticleGeo = null;
 let _ephParticlePoints = null;
+let _smallBodyData    = [];   // [{id, body}] all H<=threshold non-predefined bodies
+let _smallBodyGeo     = null;
+let _smallBodyPoints  = null;
 let _predefinedEphIds = null;
+
+function isEphemerisStableAt(simYears) {
+  return !EphemerisSystem.isFetching()
+    && !EphemerisSystem.needsRefetch(simYears, EPHEMERIS_REFETCH_MARGIN_YEARS);
+}
 
 function markOrbitLinesDirty() {
   _lastOrbitLineMode = '';
@@ -4714,11 +4955,32 @@ function getOrbitTimeRange(periodYears, mode) {
   return { start: simTime - half, end: simTime + half };
 }
 
-function sampleEphemerisWorldPoints(bodyId, startSim, endSim, count = ORBIT_LINE_SAMPLES) {
+function sampleEphemerisWorldPoints(bodyId, startSim, endSim, count = ORBIT_LINE_SAMPLES, positionFallbackFn = null) {
   if (bodyId == null) return null;
-  const trajectory = EphemerisSystem.getTrajectory(bodyId, startSim, endSim, count);
-  if (!trajectory || trajectory.length < 2) return null;
-  return trajectory.map((point) => new THREE.Vector3(point.x, point.y, point.z));
+  
+  const points = [];
+  const steps = Math.max(2, count);
+  
+  for (let i = 0; i < steps; i++) {
+    const t = i / (steps - 1);
+    const atSim = startSim + (endSim - startSim) * t;
+    
+    // Try ephemeris first (only when cache window is stable for this sample time)
+    let pos = isEphemerisStableAt(atSim) ? EphemerisSystem.getPosition(bodyId, atSim) : null;
+    
+    // Fallback to Kepler if ephemeris missing (hybrid mode — complete the orbit)
+    if (!pos && positionFallbackFn) {
+      pos = positionFallbackFn(atSim);
+      if (pos) EphemerisSystem.applyAnchor(bodyId, atSim, pos);
+    }
+    
+    if (!pos) continue;
+    
+    const point = new THREE.Vector3(pos.x, pos.y, pos.z);
+    points.push(point);
+  }
+  
+  return points.length >= 2 ? points : null;
 }
 
 function sampleKeplerWorldPoints(positionAtTimeFn, startSim, endSim, count = ORBIT_LINE_SAMPLES) {
@@ -4740,25 +5002,60 @@ function sampleAnchoredKeplerWorldPoints(bodyId, positionAtTimeFn, startSim, end
   }, startSim, endSim, count);
 }
 
-function sampleMoonRelativeEphemerisLocalPoints(moon, startSim, endSim, count = ORBIT_LINE_SAMPLES) {
+function getMoonEphemerisLocalPosition(moon, atSim, out = new THREE.Vector3()) {
+  if (!isEphemerisStableAt(atSim)) return null;
   const moonBodyId = moon.ephemerisBodyId;
   const parentBodyId = moon.parentPlanet.ephemerisBodyId;
   if (moonBodyId == null || parentBodyId == null) return null;
 
+  const moonPos = EphemerisSystem.getPosition(moonBodyId, atSim);
+  const parentPos = EphemerisSystem.getPosition(parentBodyId, atSim);
+  if (!moonPos || !parentPos) return null;
+
+  if (!Number.isFinite(moonPos.x) || !Number.isFinite(moonPos.y) || !Number.isFinite(moonPos.z)) return null;
+  if (!Number.isFinite(parentPos.x) || !Number.isFinite(parentPos.y) || !Number.isFinite(parentPos.z)) return null;
+
+  // Convert world-frame relative vector into moonIncGrp local frame.
+  moon.moonIncGrp.getWorldQuaternion(_moonBasisQ);
+  _moonBasisInvQ.copy(_moonBasisQ).invert();
+  out.set(
+    moonPos.x - parentPos.x,
+    moonPos.y - parentPos.y,
+    moonPos.z - parentPos.z,
+  ).applyQuaternion(_moonBasisInvQ);
+
+  // In visual mode, preserve exaggerated moon orbit sizes while using ephemeris direction/phase.
+  if (!realSizeMode) {
+    const realSma = moon.realOrbitSma;
+    if (Number.isFinite(realSma) && realSma > 1e-9) {
+      out.multiplyScalar(moon.visualOrbitSma / realSma);
+    }
+  }
+
+  if (!Number.isFinite(out.x) || !Number.isFinite(out.y) || !Number.isFinite(out.z)) return null;
+  return out;
+}
+
+function sampleMoonRelativeEphemerisLocalPoints(moon, startSim, endSim, count = ORBIT_LINE_SAMPLES) {
   const points = [];
   const steps = Math.max(2, count);
   for (let i = 0; i < steps; i++) {
     const t = i / (steps - 1);
     const atSim = startSim + (endSim - startSim) * t;
-    const moonPos = EphemerisSystem.getPosition(moonBodyId, atSim);
-    const parentPos = EphemerisSystem.getPosition(parentBodyId, atSim);
-    if (!moonPos || !parentPos) continue;
 
-    const moonWorld = new THREE.Vector3(moonPos.x, moonPos.y, moonPos.z);
-    const parentWorld = new THREE.Vector3(parentPos.x, parentPos.y, parentPos.z);
-    const moonLocal = moon.moonIncGrp.worldToLocal(moonWorld);
-    const parentLocal = moon.moonIncGrp.worldToLocal(parentWorld);
-    points.push(moonLocal.sub(parentLocal));
+    const relPoint = getMoonEphemerisLocalPosition(moon, atSim, _moonRelWorld);
+    if (relPoint) {
+      points.push(relPoint.clone());
+      continue;
+    }
+
+    // Per-point fallback keeps moon orbit lines aligned with live moon positions
+    // during sparse cache windows and in-flight ephemeris fetch updates.
+    const M = (2 * Math.PI * atSim / moon.md.period) + moon.angle0;
+    const E = keplerE(M, moon.md.ecc);
+    const localX = moon.orbitSma * Math.cos(E) - moon.c;
+    const localZ = -moon.b * Math.sin(E);
+    points.push(new THREE.Vector3(localX, 0, localZ));
   }
 
   return points.length >= 2 ? points : null;
@@ -4797,7 +5094,7 @@ function pinCurrentPositionIntoOrbitLine(worldPts, exactPos) {
 }
 
 function getPlanetCurrentWorldPos(planet, mode) {
-  if (mode === 'ephemeris' && planet.ephemerisBodyId != null) {
+  if (mode === 'ephemeris' && isEphemerisStableAt(simTime) && planet.ephemerisBodyId != null) {
     const ep = EphemerisSystem.getPosition(planet.ephemerisBodyId, simTime);
     if (ep) return new THREE.Vector3(ep.x, ep.y, ep.z);
   }
@@ -4807,7 +5104,7 @@ function getPlanetCurrentWorldPos(planet, mode) {
 }
 
 function getDwarfCurrentWorldPos(dwarf, mode) {
-  if (mode === 'ephemeris' && dwarf.ephemerisBodyId != null) {
+  if (mode === 'ephemeris' && isEphemerisStableAt(simTime) && dwarf.ephemerisBodyId != null) {
     const ep = EphemerisSystem.getPosition(dwarf.ephemerisBodyId, simTime);
     if (ep) return new THREE.Vector3(ep.x, ep.y, ep.z);
   }
@@ -4855,33 +5152,56 @@ function getPredefinedEphIds() {
 
 function rebuildEphParticles() {
   const predefined = getPredefinedEphIds();
-  _ephParticleBodyIds = EphemerisSystem.getCachedBodyIds().filter(id => !predefined.has(id));
+  const cachedSet  = new Set(EphemerisSystem.getCachedBodyIds());
 
-  if (_ephParticleGeo) _ephParticleGeo.dispose();
-  if (_ephParticlePoints) scene.remove(_ephParticlePoints);
+  // All non-predefined bodies from the BODIES table with H <= current threshold
+  // that have enough orbital elements to place them.
+  _smallBodyData = EphemerisSystem.getBodies().filter(b => {
+    if (predefined.has(b.id)) return false;
+    if (b.h_AbsMag == null || b.h_AbsMag > ephemerisHAbsMagMax) return false;
+    // Need at least semi-major axis + eccentricity for Kepler fallback
+    return Number.isFinite(b.semiMajorAxis_AU) && Number.isFinite(b.eccentricity) && b.eccentricity < 1;
+  });
 
-  const n = _ephParticleBodyIds.length;
-  if (n === 0) { _ephParticleGeo = null; _ephParticlePoints = null; return; }
+  // Dispose old particle geometry / points
+  if (_ephParticleGeo) { _ephParticleGeo.dispose(); _ephParticleGeo = null; }
+  if (_ephParticlePoints) { scene.remove(_ephParticlePoints); _ephParticlePoints = null; }
+  _ephParticleBodyIds = [];
+
+  if (_smallBodyGeo) { _smallBodyGeo.dispose(); _smallBodyGeo = null; }
+  if (_smallBodyPoints) { scene.remove(_smallBodyPoints); _smallBodyPoints = null; }
+
+  const n = _smallBodyData.length;
+  if (n === 0) return;
 
   const positions = new Float32Array(n * 3);
-  _ephParticleGeo = new THREE.BufferGeometry();
-  _ephParticleGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  _ephParticlePoints = new THREE.Points(
-    _ephParticleGeo,
+  _smallBodyGeo = new THREE.BufferGeometry();
+  _smallBodyGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  _smallBodyPoints = new THREE.Points(
+    _smallBodyGeo,
     new THREE.PointsMaterial({ color: 0x999988, size: 1.5, sizeAttenuation: false, depthWrite: false, transparent: true, opacity: 0.65 })
   );
-  scene.add(_ephParticlePoints);
+  scene.add(_smallBodyPoints);
+
+  // Pre-mark which bodies have cached eph data (will be re-checked each frame via getPosition)
+  // No persistent flag needed — getPosition() returns null if not cached.
 }
 
 function updateEphParticlePositions() {
-  if (!_ephParticlePoints) return;
-  const show = EphemerisSystem.getMode() === 'ephemeris' && viewMode === 'solar';
-  _ephParticlePoints.visible = show;
+  if (!_smallBodyPoints) return;
+  const show = viewMode === 'solar';   // show in both kepler and ephemeris modes
+  _smallBodyPoints.visible = show;
   if (!show) return;
 
-  const pos = _ephParticleGeo.attributes.position.array;
-  for (let i = 0; i < _ephParticleBodyIds.length; i++) {
-    const p = EphemerisSystem.getPosition(_ephParticleBodyIds[i], simTime);
+  const inEphMode = EphemerisSystem.getMode() === 'ephemeris';
+  const pos = _smallBodyGeo.attributes.position.array;
+  for (let i = 0; i < _smallBodyData.length; i++) {
+    const body = _smallBodyData[i];
+    let p = null;
+    // Use cached ephemeris data when available and in ephemeris mode
+    if (inEphMode && isEphemerisStableAt(simTime)) p = EphemerisSystem.getPosition(body.id, simTime);
+    // Fall back to Kepler from orbital elements
+    if (!p) p = getBodyDbKeplerPosition(body, simTime);
     if (p) {
       pos[i * 3]     = p.x;
       pos[i * 3 + 1] = p.y;
@@ -4890,7 +5210,7 @@ function updateEphParticlePositions() {
       pos[i * 3] = 0; pos[i * 3 + 1] = 1e9; pos[i * 3 + 2] = 0;
     }
   }
-  _ephParticleGeo.attributes.position.needsUpdate = true;
+  _smallBodyGeo.attributes.position.needsUpdate = true;
 }
 
 function refreshOrbitLines(mode) {
@@ -4898,7 +5218,7 @@ function refreshOrbitLines(mode) {
   for (const planet of planets) {
     const range = getOrbitTimeRange(planet.d.period, mode);
     const points = mode === 'ephemeris'
-      ? sampleEphemerisWorldPoints(planet.ephemerisBodyId, range.start, range.end)
+      ? sampleEphemerisWorldPoints(planet.ephemerisBodyId, range.start, range.end, ORBIT_LINE_SAMPLES, (atSim) => getPlanetScenePositionAtTime(planet, atSim, new THREE.Vector3()))
       : null;
     const worldPts = points || sampleAnchoredKeplerWorldPoints(planet.ephemerisBodyId, (atSim) => getPlanetScenePositionAtTime(planet, atSim, new THREE.Vector3()), range.start, range.end);
     pinCurrentPositionIntoOrbitLine(worldPts, getPlanetCurrentWorldPos(planet, mode));
@@ -4909,7 +5229,7 @@ function refreshOrbitLines(mode) {
   for (const dwarf of dwarfs) {
     const range = getOrbitTimeRange(dwarf.d.period, mode);
     const points = mode === 'ephemeris'
-      ? sampleEphemerisWorldPoints(dwarf.ephemerisBodyId, range.start, range.end)
+      ? sampleEphemerisWorldPoints(dwarf.ephemerisBodyId, range.start, range.end, ORBIT_LINE_SAMPLES, (atSim) => getDwarfScenePositionAtTime(dwarf, atSim, new THREE.Vector3()))
       : null;
     const worldPts = points || sampleAnchoredKeplerWorldPoints(dwarf.ephemerisBodyId, (atSim) => getDwarfScenePositionAtTime(dwarf, atSim, new THREE.Vector3()), range.start, range.end);
     pinCurrentPositionIntoOrbitLine(worldPts, getDwarfCurrentWorldPos(dwarf, mode));
@@ -4927,7 +5247,7 @@ function refreshOrbitLines(mode) {
       ? { start: simTime, end: simTime + cometPeriodYears }
       : getOrbitTimeRange(cometPeriodYears, mode);
     const points = mode === 'ephemeris'
-      ? sampleEphemerisWorldPoints(comet.ephemerisBodyId, range.start, range.end)
+      ? sampleEphemerisWorldPoints(comet.ephemerisBodyId, range.start, range.end, ORBIT_LINE_SAMPLES, (atSim) => getCometWorldPositionAtTime(comet, atSim, new THREE.Vector3()))
       : null;
     const worldPts = points || (comet.dbOrbit
       ? sampleKeplerWorldPoints((atSim) => getCometWorldPositionAtTime(comet, atSim, new THREE.Vector3()), range.start, range.end)
@@ -4936,8 +5256,19 @@ function refreshOrbitLines(mode) {
     setOrbitLineGeometryFromLocalPoints(comet.orbitLine, localPts);
   }
 
-  // Moon orbit lines stay on stable analytic geometry (setMoonOrbitScale)
-  // to avoid frame-jitter and lattice artifacts in parent-relative transforms.
+  // Moon orbit lines: use relative ephemeris tracks when available in ephemeris mode,
+  // otherwise fall back to local Kepler geometry.
+  const moonEphemerisStable = USE_SATELLITE_EPHEMERIS && isEphemerisStableAt(simTime);
+  for (const moon of moons) {
+    const moonPeriod = Math.max(0.001, Math.abs(moon.md.period || 0.01));
+    const range = { start: simTime - moonPeriod * 0.5, end: simTime + moonPeriod * 0.5 };
+    const ephLocalPts = (mode === 'ephemeris' && moonEphemerisStable)
+      ? sampleMoonRelativeEphemerisLocalPoints(moon, range.start, range.end)
+      : null;
+    const localPts = ephLocalPts || sampleMoonRelativeKeplerLocalPoints(moon, range.start, range.end);
+    setOrbitLineGeometryFromLocalPoints(moon.moonOrbitLine, localPts);
+    moon.moonOrbitLine.material.color.setHex(getOrbitLineColorHex(moon));
+  }
 
   _lastOrbitLineMode = mode;
   _lastOrbitLineSimTime = simTime;
@@ -4969,9 +5300,9 @@ function animate(){
   }
 
   // ── Ephemeris auto-refetch ─────────────────────────────────────────────────
-  if (EphemerisSystem.getMode() === 'ephemeris' && EphemerisSystem.isReady() && !EphemerisSystem.isFetching()) {
-    if (EphemerisSystem.needsRefetch(simTime)) {
-      Promise.resolve(EphemerisSystem.fetchWindow(simTime - 10, simTime + 10, 25)).finally(markOrbitLinesDirty);
+  if (EphemerisSystem.isReady() && !EphemerisSystem.isFetching()) {
+    if (EphemerisSystem.needsRefetch(simTime, EPHEMERIS_REFETCH_MARGIN_YEARS)) {
+      fetchEphemerisWindow(simTime - 10, simTime + 10).catch(() => {});
     }
   }
 
@@ -4993,8 +5324,11 @@ function animate(){
   vortexStreaks.position.z = -((sunZ * 0.22) % 2400);
 
   // ── Planet positions ───────────────────────────────────────────────────────
+  const ephemerisStableNow = isEphemerisStableAt(simTime);
   for(const p of planets){
-    const _eph = p.ephemerisBodyId != null ? EphemerisSystem.getPosition(p.ephemerisBodyId, simTime) : null;
+    const _eph = (ephemerisStableNow && p.ephemerisBodyId != null)
+      ? EphemerisSystem.getPosition(p.ephemerisBodyId, simTime)
+      : null;
     if (_eph) {
       p.tiltGroup.position.set(_eph.x, _eph.y, _eph.z);
     } else {
@@ -5006,6 +5340,11 @@ function animate(){
       ? getEarthRotationAngle(simTime)
       : (simTime * 365.25 / p.d.rotPeriod) * Math.PI * 2;
     p.mesh.rotation.y = planetRotation;
+    // Update Earth day/night shader: sun is always at world origin
+    if (p.d.name === 'EARTH' && p.mesh.material.isShaderMaterial) {
+      p.tiltGroup.getWorldPosition(_earthSunDirTmp);
+      p.mesh.material.uniforms.sunDir.value.copy(_earthSunDirTmp).negate().normalize();
+    }
     if (p.mesh.userData.travelMarker) updateEarthTravelMarker(p);
     if (p.cloudMesh) {
       p.cloudMesh.rotation.y = p.d.name === 'EARTH'
@@ -5022,20 +5361,26 @@ function animate(){
     for (const pr of probes) {
       if (pr.mesh.position.distanceToSquared(p.tiltGroup.position) < fadeDistSq) { nearProbe = true; break; }
     }
-    if (p.mesh.material.transparent !== nearProbe) {
-      p.mesh.material.transparent = nearProbe;
-      p.mesh.material.needsUpdate = true;
+    if (p.mesh.material.isShaderMaterial) {
+      p.mesh.material.uniforms.opacity.value = nearProbe ? 0.35 : 1.0;
+    } else {
+      if (p.mesh.material.transparent !== nearProbe) {
+        p.mesh.material.transparent = nearProbe;
+        p.mesh.material.needsUpdate = true;
+      }
+      p.mesh.material.opacity = nearProbe ? 0.35 : 1.0;
     }
-    p.mesh.material.opacity = nearProbe ? 0.35 : 1.0;
     p.orbitLine.material.color.setHex(getOrbitLineColorHex(p));
     p.orbitLine.visible = orbitsOn && (viewMode==='solar');
     p.trailLine.visible = trailsOn && (viewMode!=='solar');
   }
 
   // ── Asteroid/TNO belt orbits ────────────────────────────────────────────────
-  updateBelt(mainBelt);
-  updateBelt(kuiperBelt);
-  updateBelt(scatteredDisc);
+  if (ENABLE_SIMULATED_BELTS) {
+    updateBelt(mainBelt);
+    updateBelt(kuiperBelt);
+    updateBelt(scatteredDisc);
+  }
   updateOortCloud();
   updateComets();
   updateProbes();
@@ -5043,7 +5388,9 @@ function animate(){
 
   // ── Dwarf planet positions ──────────────────────────────────────────────────
   for(const p of dwarfs){
-    const _eph = p.ephemerisBodyId != null ? EphemerisSystem.getPosition(p.ephemerisBodyId, simTime) : null;
+    const _eph = (ephemerisStableNow && p.ephemerisBodyId != null)
+      ? EphemerisSystem.getPosition(p.ephemerisBodyId, simTime)
+      : null;
     if (_eph) {
       p.mesh.position.set(_eph.x, _eph.y, _eph.z);
     } else {
@@ -5055,7 +5402,7 @@ function animate(){
     p.orbitLine.visible = orbitsOn && (viewMode==='solar');
     // Charon orbits Pluto
     if (p.charon) {
-      const _charonEph = (USE_SATELLITE_EPHEMERIS && p.charonEphemerisBodyId != null)
+      const _charonEph = (ephemerisStableNow && USE_SATELLITE_EPHEMERIS && p.charonEphemerisBodyId != null)
         ? EphemerisSystem.getPosition(p.charonEphemerisBodyId, simTime)
         : null;
       if (_charonEph) {
@@ -5063,22 +5410,21 @@ function animate(){
         _moonTargetWorld.set(_charonEph.x, _charonEph.y, _charonEph.z);
         p.charon.position.copy(p.mesh.worldToLocal(_moonTargetWorld));
       } else {
-        getCharonWorldPositionAtTime(p, simTime, _moonTargetWorld);
-        if (p.charonEphemerisBodyId != null) EphemerisSystem.applyAnchor(p.charonEphemerisBodyId, simTime, _moonTargetWorld);
-        p.mesh.updateWorldMatrix(true, false);
-        p.charon.position.copy(p.mesh.worldToLocal(_moonTargetWorld));
+        const charonPeriodYears = p.charonPeriodYears || (Math.abs(p.d.rotPeriod) / 365.25);
+        const angle = ((2 * Math.PI * simTime) / charonPeriodYears) + (p.charonAngle0 ?? 0);
+        const orbitRadius = p.charonOrbitRadius ?? p.visualCharonOrbitRadius ?? 0.6;
+        p.charon.position.set(Math.cos(angle) * orbitRadius, 0, Math.sin(angle) * orbitRadius);
       }
     }
   }
+  const moonEphemerisStable = ephemerisStableNow && USE_SATELLITE_EPHEMERIS;
   for(const m of moons){
-    const _moonEph = (USE_SATELLITE_EPHEMERIS && m.ephemerisBodyId != null)
+    const _moonEph = (moonEphemerisStable && m.ephemerisBodyId != null)
       ? EphemerisSystem.getPosition(m.ephemerisBodyId, simTime)
       : null;
     m.moonIncGrp.position.copy(m.parentPlanet.tiltGroup.position);
-    if (_moonEph) {
-      m.moonIncGrp.updateWorldMatrix(true, false);
-      _moonTargetWorld.set(_moonEph.x, _moonEph.y, _moonEph.z);
-      m.moonMesh.position.copy(m.moonIncGrp.worldToLocal(_moonTargetWorld));
+    if (_moonEph && getMoonEphemerisLocalPosition(m, simTime, _moonLocalPos)) {
+      m.moonMesh.position.copy(_moonLocalPos);
     } else {
       getMoonLocalPositionAtTime(m, simTime, _moonLocalPos);
       m.moonMesh.position.copy(_moonLocalPos);
@@ -5102,6 +5448,7 @@ function animate(){
     } else {
       m.moonMesh.rotation.copy(m.baseRotation);
     }
+    m.moonOrbitLine.material.color.setHex(getOrbitLineColorHex(m));
     m.moonOrbitLine.visible = orbitsOn && (viewMode==='solar');
     m.moonDot.visible = realSizeMode && (viewMode === 'solar');
   }
@@ -5269,8 +5616,13 @@ function slugify(name) {
 }
 
 (async () => {
-  const ok = await EphemerisSystem.init({ apiBase: '/sol-api' });
+  const ok = await EphemerisSystem.init({ apiBase: '/sol-api', hMax: ephemerisHAbsMagMax });
   if (!ok) return;
+
+  syncEphemerisObjectCount();  // bodies are now loaded — update the display count
+
+  // Begin staged ephemeris prefetch during intro so cache is warm when UI unlocks.
+  startIntroEphemerisPrefetch();
 
   const cometSlugMap = {
     "Halley's": 'halley',
@@ -5392,6 +5744,8 @@ function slugify(name) {
     }
     return null;
   };
+
+  keplerAnchorProvider = keplerAt;
 
   await EphemerisSystem.fetchAnchor(simTime, keplerAt);
 })();

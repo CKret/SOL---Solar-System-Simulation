@@ -11,15 +11,15 @@ public sealed class SqlServerEphemerisRepository(ISqlConnectionFactory connectio
 
   private const string BodyColumns = @"
     b.BodyId         AS Id,
-    b.Slug,
-    b.DisplayName    AS Name,
-    b.Kind,
+    COALESCE(NULLIF(LTRIM(RTRIM(b.Slug)), ''), CONCAT('body-', b.BodyId)) AS Slug,
+    COALESCE(NULLIF(LTRIM(RTRIM(b.DisplayName)), ''), NULLIF(LTRIM(RTRIM(b.Slug)), ''), CONCAT('body-', b.BodyId)) AS Name,
+    COALESCE(NULLIF(LTRIM(RTRIM(b.Kind)), ''), 'small-body') AS Kind,
     b.ParentBodyId,
-    b.SortOrder,
+    COALESCE(b.SortOrder, 2147483647) AS SortOrder,
     b.JplHorizonsId,
     b.SbdbDesig,
     b.H_AbsMag,
-    b.HasEphemeris,
+    COALESCE(b.HasEphemeris, CAST(0 AS bit)) AS HasEphemeris,
     b.EphemerisMinJD,
     b.EphemerisMaxJD,
     b.EphemerisMinStr,
@@ -59,7 +59,7 @@ public sealed class SqlServerEphemerisRepository(ISqlConnectionFactory connectio
 
     await using var connection = _connectionFactory.CreateConnection();
     await connection.OpenAsync(cancellationToken);
-    await using var command = new SqlCommand(sql.ToString(), connection);
+    await using var command = new SqlCommand(sql.ToString(), connection) { CommandTimeout = 0 };
     if (hMax.HasValue) command.Parameters.AddWithValue("@hMax", hMax.Value);
     if (maxBodies.HasValue) command.Parameters.AddWithValue("@maxBodies", Math.Max(1, maxBodies.Value));
     await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, cancellationToken);
