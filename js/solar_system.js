@@ -3356,6 +3356,17 @@ let realSizeMode = false;
 let followNowMode = false;
 let keplerAnchorProvider = null;
 let anchorRefreshSeq = 0;
+let realtimeAnchorPerfMs = performance.now();
+let realtimeAnchorSimTime = simTime;
+
+function rebaseRealtimeClock(targetSimTime = simTime) {
+  realtimeAnchorPerfMs = performance.now();
+  realtimeAnchorSimTime = targetSimTime;
+}
+
+function getRealtimeSimTime(nowMs = performance.now()) {
+  return realtimeAnchorSimTime + ((nowMs - realtimeAnchorPerfMs) / 1000) * REALTIME_SIM_SPEED;
+}
 
 function getMoonRenderScale(moon) {
   if (!realSizeMode) return 1;
@@ -3432,6 +3443,7 @@ spdEl.addEventListener('input', () => {
 });
 function toggleRealtimeMode() {
   realtimeMode = !realtimeMode;
+  if (realtimeMode) rebaseRealtimeClock(simTime);
   if (!realtimeMode) followNowMode = false;
   updateSpdLabel();
 }
@@ -3674,6 +3686,7 @@ tlEl.addEventListener('touchend',  () => { timelineDragging = false; });
 tlEl.addEventListener('input', () => {
   followNowMode = false;
   simTime = parseFloat(tlEl.value);
+  if (realtimeMode) rebaseRealtimeClock(simTime);
   sunZ = simTime * GALACTIC_SCENE_SPEED;
   updateTimelineDisplay();
   syncTimelineHardpointUi();
@@ -3684,6 +3697,7 @@ document.querySelectorAll('.tlstep').forEach(b => {
   b.addEventListener('click', () => {
     followNowMode = false;
     simTime += parseFloat(b.dataset.step);
+    if (realtimeMode) rebaseRealtimeClock(simTime);
     sunZ = simTime * GALACTIC_SCENE_SPEED;
     updateTimelineDisplay();
   });
@@ -3695,6 +3709,7 @@ document.querySelectorAll('.tlhp').forEach(b => {
     const isNowButton = b.dataset.now === 'true';
     followNowMode = isNowButton && realtimeMode;
     simTime = isNowButton ? getCurrentSimTime() : parseFloat(b.dataset.year);
+    if (realtimeMode) rebaseRealtimeClock(simTime);
     sunZ = simTime * GALACTIC_SCENE_SPEED;
     updateTimelineDisplay();
     syncTimelineHardpointUi();
@@ -3846,6 +3861,7 @@ updateFullscreenButton();
 
 pauseBtn?.addEventListener('click', ()=>{
   paused=!paused;
+  if (!paused && realtimeMode) rebaseRealtimeClock(simTime);
   syncPauseUi();
 });
 document.getElementById('orbits-btn').addEventListener('click', ()=>{
@@ -5328,13 +5344,18 @@ function updateEarthTravelMarker(planet) {
 function animate(){
   requestAnimationFrame(animate);
   const now=performance.now();
-  const dt=Math.min((now-lastT)/1000, 0.1);
+  const dtRaw=Math.max(0, (now-lastT)/1000);
+  const dt=Math.min(dtRaw, 0.1);
   lastT=now;
 
   // ── Sim advance ────────────────────────────────────────────────────────────
   if(!paused){
-    const ds = dt * getSimSpeed();
-    simTime += ds;
+    if (realtimeMode) {
+      simTime = getRealtimeSimTime(now);
+    } else {
+      const ds = dt * getSimSpeed();
+      simTime += ds;
+    }
     sunZ     = simTime * GALACTIC_SCENE_SPEED; // deterministic — no float accumulation
   }
 
