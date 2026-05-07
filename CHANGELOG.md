@@ -4,6 +4,12 @@ This changelog is derived from the project's git commit messages and is listed n
 
 ## 2026-05-08
 
+### Fixed
+- `4b9f6bc` Ephemeris sample importer no longer fails on startup when `sol_user` lacks `VIEW DEFINITION`: removed `EnsureEphemerisMergeIndexAsync` which used `OBJECT_ID()` (returns `NULL` without that permission), causing `CREATE INDEX` to run unconditionally and error.
+- `4b9f6bc` Added missing `IX_EphemerisSamples_BodyId_SampleJd` index to `001_initial_schema.sql` where it belongs.
+- `4b9f6bc` Reduced `import-samples` JPL Horizons concurrency from 5 to 2 and added a 1 s delay between chunk fetches to avoid rate limiting.
+- `4b9f6bc` Body catalog sync phase now logs per-body progress so `import-samples` no longer appears stalled during startup.
+
 ### Added
 - `60d4552` Incremental body-batch API: `GET /api/bodies/batch` now serves keyset-paginated H-band slices so the frontend can load minor-planet metadata in smaller background batches instead of re-requesting the full `h_max` range each time.
 - `60d4552` Body catalog is now merged incrementally into the existing frontend catalog during background warm-up instead of replacing it.
