@@ -19,7 +19,11 @@ builder.Services.AddCors(options =>
 			.AllowAnyMethod());
 });
 
-builder.Services.AddMemoryCache();
+builder.Services.AddMemoryCache(options =>
+{
+	// Keep total in-process cache bounded; entry sizes are set on write.
+	options.SizeLimit = 50_000_000; // approx 50 MB budget
+});
 builder.Services.AddSingleton<ISqlConnectionFactory, SqlConnectionFactory>();
 builder.Services.AddSingleton<ISqlWriteConnectionFactory, SqlWriteConnectionFactory>();
 builder.Services.AddScoped<IEphemerisRepository, SqlServerEphemerisRepository>();
@@ -179,13 +183,30 @@ app.MapGet("/api/ephemeris/window", async (DateTime centerUtc, double? radiusDay
 	var startUtc = centerUtc.AddDays(-radius);
 	var endUtc = centerUtc.AddDays(radius);
 	var stride = Math.Max(1, step ?? 1);
+	var normalizedMaxBodies = maxBodies.HasValue ? Math.Clamp(maxBodies.Value, 1, 5000) : (int?)null;
+	var isAuthoritativeOnly = h_max is null && !normalizedMaxBodies.HasValue;
+	var shouldCache = isAuthoritativeOnly;
 
-	var cacheKey = $"ephwin|{centerUtc:o}|{radius}|{h_max}|{stride}|{maxBodies}";
-	if (!cache.TryGetValue(cacheKey, out EphemerisBulkResponse? response))
+	var cacheKey = $"ephwin|{centerUtc:o}|{radius}|{h_max}|{stride}|{normalizedMaxBodies}";
+	if (!shouldCache || !cache.TryGetValue(cacheKey, out EphemerisBulkResponse? response))
 	{
-		var samples = await repository.GetBulkSamplesAsync(startUtc, endUtc, h_max, stride, maxBodies, cancellationToken);
+		var samples = await repository.GetBulkSamplesAsync(startUtc, endUtc, h_max, stride, normalizedMaxBodies, cancellationToken);
 		response = new EphemerisBulkResponse(startUtc, endUtc, samples.Count, samples);
-		cache.Set(cacheKey, response, TimeSpan.FromHours(1));
+
+		if (shouldCache)
+		{
+			// Very short lived + bounded entry size to avoid timeline-cardinality blowups.
+			var approxBytes = Math.Max(1, samples.Count * 96);
+			if (approxBytes <= 8_000_000)
+			{
+				cache.Set(cacheKey, response, new MemoryCacheEntryOptions
+				{
+					AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(30),
+					Size = approxBytes,
+					Priority = CacheItemPriority.Low,
+				});
+			}
+		}
 	}
 
 	return Results.Ok(response);
@@ -199,12 +220,28 @@ app.MapGet("/api/ephemeris/bulk", async (DateTime startUtc, DateTime endUtc, dou
 		return Results.BadRequest(new { error = "endUtc must be greater than or equal to startUtc." });
 
 	var stride = Math.Max(1, step ?? 1);
-	var cacheKey = $"eph|{startUtc:o}|{endUtc:o}|{h_max}|{stride}|{maxBodies}";
-	if (!cache.TryGetValue(cacheKey, out EphemerisBulkResponse? response))
+	var normalizedMaxBodies = maxBodies.HasValue ? Math.Clamp(maxBodies.Value, 1, 5000) : (int?)null;
+	var isAuthoritativeOnly = h_max is null && !normalizedMaxBodies.HasValue;
+	var shouldCache = isAuthoritativeOnly;
+	var cacheKey = $"eph|{startUtc:o}|{endUtc:o}|{h_max}|{stride}|{normalizedMaxBodies}";
+	if (!shouldCache || !cache.TryGetValue(cacheKey, out EphemerisBulkResponse? response))
 	{
-		var samples = await repository.GetBulkSamplesAsync(startUtc, endUtc, h_max, stride, maxBodies, cancellationToken);
+		var samples = await repository.GetBulkSamplesAsync(startUtc, endUtc, h_max, stride, normalizedMaxBodies, cancellationToken);
 		response = new EphemerisBulkResponse(startUtc, endUtc, samples.Count, samples);
-		cache.Set(cacheKey, response, TimeSpan.FromHours(1));
+
+		if (shouldCache)
+		{
+			var approxBytes = Math.Max(1, samples.Count * 96);
+			if (approxBytes <= 8_000_000)
+			{
+				cache.Set(cacheKey, response, new MemoryCacheEntryOptions
+				{
+					AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(30),
+					Size = approxBytes,
+					Priority = CacheItemPriority.Low,
+				});
+			}
+		}
 	}
 	return Results.Ok(response);
 });

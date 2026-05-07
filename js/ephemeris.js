@@ -234,18 +234,7 @@ const EphemerisSystem = (() => {
   }
 
   async function loadBodies(hMax) {
-    if (_loadedHMax == null || hMax == null || hMax <= _loadedHMax) {
-      await _loadBodies(hMax);
-      return;
-    }
-
-    const before = _bodies.length;
-    for (let step = Math.floor(_loadedHMax) + 1; step <= Math.floor(hMax); step++) {
-      await _loadBodiesRange(step - 1, step);
-      _loadedHMax = step;
-      console.log(`[Ephemeris] Incremental bodies warmup H<=${step}: ${_bodies.length.toLocaleString()} cached (+${(_bodies.length - before).toLocaleString()})`);
-    }
-    _loadedHMax = hMax;
+    await _loadBodies(hMax);
   }
 
   async function warmBodiesInBackground(startH = 12, endH = 25, batchSize = 10000) {
@@ -253,20 +242,13 @@ const EphemerisSystem = (() => {
     _bodyWarmupRunning = true;
 
     try {
-      let current = _loadedHMax ?? startH;
-      if (current < startH) {
-        await loadBodies(startH);
-        current = startH;
-      }
-
-      for (let h = Math.floor(current) + 1; h <= Math.floor(endH); h++) {
-        const added = await _loadBodiesRange(h - 1, h, batchSize);
-        _loadedHMax = h;
-        console.log(`[Ephemeris] Background body warmup H(${h - 1}, ${h}] added ${added.toLocaleString()} bodies (total ${_bodies.length.toLocaleString()}).`);
+      const targetH = Math.floor(endH);
+      if (_loadedHMax == null || _loadedHMax < targetH) {
+        await loadBodies(targetH);
       }
 
       _bodyWarmupDone = true;
-      console.log(`[Ephemeris] Background body warmup complete through H<=${Math.floor(endH)}. Cached ${_bodies.length.toLocaleString()} bodies.`);
+      console.log(`[Ephemeris] Background body warmup complete through H<=${targetH}. Cached ${_bodies.length.toLocaleString()} bodies.`);
     } catch (err) {
       console.warn('[Ephemeris] background body warmup failed:', err?.message || err);
     } finally {

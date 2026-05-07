@@ -2657,7 +2657,7 @@ function isCometOrbitVisibleAtTime(cm, time = simTime) {
 // Tail geometry: series of points streaming away from Sun
 const TAIL_PTS = 120;
 
-function createSl9Fragments(incGrp, baseRadius, color) {
+function createSl9Fragments(incGrp, baseRadius, color, cometNucleus = null) {
   const fragments = [];
   const count = 12;
   for (let i = 0; i < count; i++) {
@@ -2668,6 +2668,7 @@ function createSl9Fragments(incGrp, baseRadius, color) {
     );
     mesh.visible = false;
     mesh.userData.fragmentIndex = i;
+    if (cometNucleus) mesh.userData.cometNucleus = cometNucleus;
     incGrp.add(mesh);
     fragments.push(mesh);
   }
@@ -2756,7 +2757,7 @@ for (const cd of COMET_DATA) {
     incGrp, nucleus, orbitLine,
     dustTail, dustGeo, dustPos, dustCol, dustSiz,
     ionTail,  ionGeo,  ionPos,  ionCol,  ionSiz,
-    fragments: cd.name === 'Shoemaker-Levy 9' ? createSl9Fragments(incGrp, cd.r, cd.color) : null,
+    fragments: cd.name === 'Shoemaker-Levy 9' ? createSl9Fragments(incGrp, cd.r, cd.color, nucleus) : null,
     realSizeScale: getRealSizeScale(cd.r, null, diameterKm),
     b, c, orbitEcc: visualOrbit.ecc,
     angle0: hashNameToUnit(cd.name) * Math.PI * 2,
@@ -2781,6 +2782,11 @@ const _jupiterPosLocal = new THREE.Vector3();
 const _sl9ApproachDir = new THREE.Vector3();
 const _sl9FragmentDir = new THREE.Vector3();
 const _sl9FragmentSide = new THREE.Vector3();
+const _sl9FragmentUp = new THREE.Vector3();
+const _sl9FragmentCenter = new THREE.Vector3();
+const _sl9FragmentTravelDir = new THREE.Vector3();
+const SL9_FRAGMENT_IMPACT_SPAN_DAYS = 6.5;
+const SL9_FRAGMENT_IMPACT_SPAN_YEARS = SL9_FRAGMENT_IMPACT_SPAN_DAYS / 365.25;
 
 function getCometLocalPosition(cm, timeYears, out = new THREE.Vector3()) {
   const orbitalPeriodYears = cm.orbitalPeriodYears || cm.cd.period;
@@ -2864,9 +2870,11 @@ function updateComets() {
     cm.nucleus.visible = true;
     cm.dustTail.visible = true;
     cm.ionTail.visible = true;
+    let fragmentsActive = false;
 
     const cometPeriodYears = cm.orbitalPeriodYears || cm.cd.period;
-    const _cometEph = canUseBodyEphemeris(cm.ephemerisBodyId, cometPeriodYears, simTime)
+    const allowCometEphemeris = cm.cd.name !== 'Shoemaker-Levy 9';
+    const _cometEph = (allowCometEphemeris && canUseBodyEphemeris(cm.ephemerisBodyId, cometPeriodYears, simTime))
       ? EphemerisSystem.getPosition(cm.ephemerisBodyId, simTime)
       : null;
     if (_cometEph) {
@@ -2885,6 +2893,9 @@ function updateComets() {
     if (cm.fragments) {
       const showFragments = isCometOnTerminalApproach(cm);
       if (showFragments && jupiterPlanet) {
+        fragmentsActive = true;
+        cm.nucleus.visible = false;
+        cm.nucleus.userData.coma.visible = false;
         getPlanetScenePositionAtTime(jupiterPlanet, simTime, _jupiterPos);
         _jupiterPosWorld.copy(_jupiterPos);
         solarPivot.localToWorld(_jupiterPosWorld);
@@ -2898,25 +2909,52 @@ function updateComets() {
         _sl9FragmentSide.set(-_sl9FragmentDir.z, 0, _sl9FragmentDir.x);
         if (_sl9FragmentSide.lengthSq() < 1e-12) _sl9FragmentSide.set(0, 0, 1);
         else _sl9FragmentSide.normalize();
+        _sl9FragmentUp.crossVectors(_sl9FragmentDir, _sl9FragmentSide);
+        if (_sl9FragmentUp.lengthSq() < 1e-12) _sl9FragmentUp.set(0, 1, 0);
+        else _sl9FragmentUp.normalize();
 
         const startSimTime = COMET_APPROACH_START_SIM_TIME[cm.cd.name];
         const endSimTime = COMET_END_SIM_TIME[cm.cd.name];
         const approachT = THREE.MathUtils.clamp((simTime - startSimTime) / Math.max(1e-9, endSimTime - startSimTime), 0, 1);
         const compressed = 1 - (approachT * approachT);
+        const spreadScale = cm.cd.r * (0.9 + 1.3 * compressed);
+        const streamScale = cm.cd.r * (0.8 + 1.8 * compressed);
 
         for (let i = 0; i < cm.fragments.length; i++) {
           const frag = cm.fragments[i];
           frag.visible = true;
-          const chain = (i + 1) / cm.fragments.length;
-          const behind = (cm.cd.r * (2.6 + chain * 8.8)) * compressed;
-          const lateral = (Math.sin(chain * 12.7) * 0.18 + (chain - 0.5) * 0.55) * cm.cd.r * compressed;
-          frag.position.copy(cm.nucleus.position)
-            .addScaledVector(_sl9FragmentDir, -behind)
-            .addScaledVector(_sl9FragmentSide, lateral);
+          const t = (cm.fragments.length <= 1) ? 0.5 : (i / (cm.fragments.length - 1));
+          // Stagger each fragment along its own delayed timeline so impacts do not occur simultaneously.
+          const delayYears = t * SL9_FRAGMENT_IMPACT_SPAN_YEARS;
+          const fragTime = THREE.MathUtils.clamp(simTime - delayYears, startSimTime, endSimTime - 1e-7);
+          getCometLocalPosition(cm, fragTime, _sl9FragmentCenter);
+
+          _sl9FragmentTravelDir.copy(_jupiterPosLocal).sub(_sl9FragmentCenter);
+          if (_sl9FragmentTravelDir.lengthSq() < 1e-12) _sl9FragmentTravelDir.copy(_sl9FragmentDir);
+          else _sl9FragmentTravelDir.normalize();
+
+          const along = (t - 0.5) * streamScale;
+          const lateral = ((Math.sin((i + 1) * 2.37) * 0.5) + (t - 0.5) * 0.15) * spreadScale;
+          const vertical = Math.cos((i + 1) * 1.73) * spreadScale * 0.35;
+          frag.position.copy(_sl9FragmentCenter)
+            .addScaledVector(_sl9FragmentTravelDir, along)
+            .addScaledVector(_sl9FragmentSide, lateral)
+            .addScaledVector(_sl9FragmentUp, vertical);
         }
       } else {
-        for (const frag of cm.fragments) frag.visible = false;
+        cm.nucleus.visible = true;
+        for (const frag of cm.fragments) {
+          frag.visible = false;
+        }
       }
+    }
+
+    if (fragmentsActive) {
+      cm.dustTail.visible = false;
+      cm.ionTail.visible = false;
+      cm.dustGeo.setDrawRange(0, 0);
+      cm.ionGeo.setDrawRange(0, 0);
+      continue;
     }
 
     // Get world position of nucleus
@@ -3159,24 +3197,12 @@ function updateProbes() {
     if (!launched) continue;
 
     // Current position from ephemeris or anchored trajectory fallback
-    const _probeEph = (pr.ephemerisBodyId != null)
-      ? EphemerisSystem.getPosition(pr.ephemerisBodyId, simTime)
-      : null;
-    const pos = _probeEph
-      ? _probePosCurrent.set(_probeEph.x, _probeEph.y, _probeEph.z)
-      : getProbeScenePositionAtTime(pr, simTime, _probePosCurrent);
-    if (!_probeEph && pr.ephemerisBodyId != null) EphemerisSystem.applyAnchor(pr.ephemerisBodyId, simTime, pos);
+    const pos = getProbeScenePositionAtTime(pr, simTime, _probePosCurrent);
     pr.mesh.position.copy(pos);
 
     // Orient toward direction of travel
     const nextSimTime = simTime + 0.5;
-    const _probeNextEph = (pr.ephemerisBodyId != null)
-      ? EphemerisSystem.getPosition(pr.ephemerisBodyId, nextSimTime)
-      : null;
-    const posNext = _probeNextEph
-      ? _probePosNext.set(_probeNextEph.x, _probeNextEph.y, _probeNextEph.z)
-      : getProbeScenePositionAtTime(pr, nextSimTime, _probePosNext);
-    if (!_probeNextEph && pr.ephemerisBodyId != null) EphemerisSystem.applyAnchor(pr.ephemerisBodyId, nextSimTime, posNext);
+    const posNext = getProbeScenePositionAtTime(pr, nextSimTime, _probePosNext);
     const dir = posNext.clone().sub(pos).normalize();
     pr.mesh.lookAt(pos.clone().add(dir));
 
@@ -3236,16 +3262,16 @@ function updateProbes() {
       }
       n++;
     }
-    // If simTime is beyond last data point, append extrapolated current position
-    // so the trail always extends to the probe's actual rendered location
+    // Always append the exact interpolated current position so trail and mesh stay in lockstep.
     const lastT = traj[traj.length - 1][0];
-    if (simTime > lastT && n > 0 && n < pr.PROBE_TRAIL_PTS) {
+    if (n > 0 && n < pr.PROBE_TRAIL_PTS) {
       pr.trailPos[n*3]   = Number.isFinite(pos.x) ? pos.x : 0;
       pr.trailPos[n*3+1] = Number.isFinite(pos.y) ? pos.y : 0;
       pr.trailPos[n*3+2] = Number.isFinite(pos.z) ? pos.z : 0;
-      pr.trailCol[n*3]   = cr;
-      pr.trailCol[n*3+1] = cg;
-      pr.trailCol[n*3+2] = cb;
+      const endFade = simTime > lastT ? 1.0 : 0.98;
+      pr.trailCol[n*3]   = cr * endFade;
+      pr.trailCol[n*3+1] = cg * endFade;
+      pr.trailCol[n*3+2] = cb * endFade;
       n++;
     }
     pr.trailGeo.attributes.position.needsUpdate = true;
@@ -3570,7 +3596,6 @@ function fetchEphemerisWindow(startSim, endSim) {
 function startIntroEphemerisPrefetch() {
   if (introPrefetchStarted || !EphemerisSystem.isReady()) return;
   introPrefetchStarted = true;
-  Promise.resolve(EphemerisSystem.warmBodiesInBackground(12, 25, 10000)).catch(() => {});
   fetchEphemerisWindow(simTime - 10, simTime + 10).catch(() => {});
 }
 
@@ -4507,7 +4532,10 @@ infoToggleBtn?.addEventListener('click', () => {
 function getHit(cx,cy){
   m2.set((cx/window.innerWidth)*2-1, -(cy/window.innerHeight)*2+1);
   raycaster.setFromCamera(m2, camera);
-  const targets=[sunMesh,...planets.map(p=>p.mesh),...moons.map(m=>m.moonMesh),...dwarfs.map(d=>d.mesh),...comets.filter(c=>isCometAvailableAtTime(c)).map(c=>c.nucleus),...probes.map(p=>p.mesh)];
+  const cometTargets = comets
+    .filter(c => isCometAvailableAtTime(c))
+    .flatMap(c => c.fragments ? [c.nucleus, ...c.fragments] : [c.nucleus]);
+  const targets=[sunMesh,...planets.map(p=>p.mesh),...moons.map(m=>m.moonMesh),...dwarfs.map(d=>d.mesh),...cometTargets,...probes.map(p=>p.mesh)];
   const hits=raycaster.intersectObjects(targets, true);
   if (!hits.length) return null;
   const obj = hits[0].object;
