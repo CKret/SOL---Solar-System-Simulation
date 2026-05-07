@@ -5,16 +5,15 @@ This changelog is derived from the project's git commit messages and is listed n
 ## 2026-05-08
 
 ### Added
-- Incremental body-batch API: `GET /api/bodies/batch` now serves keyset-paginated H-band slices so the frontend can load minor-planet metadata in smaller background batches instead of re-requesting the full `h_max` range each time.
-- Intro-time body warm-up now starts from the initial bright-body set and expands in the background through `H <= 25`, making the searchable/renderable ephemeris catalog fill in progressively during startup.
+- `60d4552` Incremental body-batch API: `GET /api/bodies/batch` now serves keyset-paginated H-band slices so the frontend can load minor-planet metadata in smaller background batches instead of re-requesting the full `h_max` range each time.
+- `60d4552` Body catalog is now merged incrementally into the existing frontend catalog during background warm-up instead of replacing it.
 
 ### Changed
-- `import-samples` now syncs the authoritative body catalog before fetching Horizons chunks, so curated bodies and updated Horizons ranges are refreshed automatically at import start.
-- Backend body loading now merges newly fetched batches into the existing frontend catalog instead of replacing it during incremental warm-up.
+- `60d4552` `import-samples` now syncs the authoritative body catalog before fetching Horizons chunks, so curated bodies are refreshed automatically at import start.
 
 ### Fixed
-- Long ephemeris imports no longer pay the same large in-memory staging cost before bulk copy: sample inserts now stream rows directly into `SqlBulkCopy`.
-- Import throughput no longer degrades as severely on large `EphemerisSamples` tables because the duplicate-check merge index is ensured before import work begins.
+- `60d4552` Ephemeris sample imports now stream rows directly into `SqlBulkCopy` instead of staging them fully in memory first.
+- `1773910` Fixed Shoemaker-Levy 9 fragment impacts (staggered impact sequence, nucleus hidden during fragment phase, fragments are individually focusable).
 
 ## 2026-05-07
 
