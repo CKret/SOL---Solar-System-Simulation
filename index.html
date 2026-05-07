@@ -231,56 +231,42 @@ body.intro-active #mobile-backdrop {
 }
 
 .intro-flare {
-  left:46%;
-  top:44%;
-  width:min(82vw, 980px);
-  height:min(82vw, 980px);
-  transform:translate(-50%, -50%);
+  /*
+    Optical-axis flare only.
+    Nothing is drawn on top of the O/Sun. The flare artifacts start away
+    from the title and run from the Sun direction toward the top-left.
+  */
+  inset:0;
   opacity:0;
   animation:introFlare 10s ease forwards;
 }
 
 .intro-flare::before {
-  left:9%;
-  top:11%;
-  width:112px;
-  height:112px;
-  border-radius:50%;
-  background:
-    radial-gradient(circle at center,
-      rgba(255,255,255,0.98) 0%,
-      rgba(255,246,210,0.88) 9%,
-      rgba(196,225,255,0.48) 24%,
-      rgba(124,178,255,0.14) 42%,
-      rgba(124,178,255,0.03) 58%,
-      transparent 70%),
-    radial-gradient(circle at 44% 46%, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.14) 18%, transparent 38%);
-  box-shadow:
-    0 0 18px rgba(255,244,214,0.32),
-    0 0 42px rgba(150,196,255,0.18),
-    0 0 96px rgba(120,175,255,0.06);
-  filter:blur(0.2px);
+  /* removed the broad diagonal streak */
+  display:none;
 }
 
 .intro-flare::after {
-  left:-8%;
-  top:14.5%;
-  width:76%;
-  height:10px;
-  border-radius:999px;
+  /* soft top-left light source only — no spokes/starburst */
+  left:6.5%;
+  top:6.5%;
+  width:clamp(70px, 8.5vw, 126px);
+  height:clamp(70px, 8.5vw, 126px);
+  border-radius:50%;
+  transform:translate(-50%, -50%);
   background:
-    linear-gradient(90deg,
-      transparent 0%,
-      rgba(140,190,255,0.02) 12%,
-      rgba(180,225,255,0.08) 20%,
-      rgba(255,255,255,0.16) 24%,
-      rgba(165,210,255,0.09) 32%,
-      rgba(120,170,255,0.04) 52%,
-      rgba(150,205,255,0.03) 66%,
-      transparent 100%);
-  transform:rotate(-16deg);
-  transform-origin:left center;
-  filter:blur(2.8px);
+    radial-gradient(circle at center,
+      rgba(255,255,255,0.72) 0%,
+      rgba(255,232,168,0.48) 6%,
+      rgba(255,174,82,0.18) 17%,
+      rgba(255,174,82,0.055) 34%,
+      rgba(255,174,82,0.018) 52%,
+      transparent 72%);
+  box-shadow:
+    0 0 26px rgba(255,206,118,0.12),
+    0 0 72px rgba(255,158,64,0.06);
+  filter:blur(0.8px);
+  opacity:0.62;
 }
 
 .intro-flare-ghosts,
@@ -300,20 +286,22 @@ body.intro-active #mobile-backdrop {
 
 .intro-flare-ghosts::before {
   background:
-    radial-gradient(circle at 26% 18%, rgba(120,170,255,0.1) 0%, rgba(120,170,255,0.045) 3.2%, transparent 6.5%),
-    radial-gradient(circle at 40% 28%, rgba(255,244,204,0.09) 0%, rgba(255,244,204,0.035) 2.8%, transparent 5.8%),
-    radial-gradient(circle at 55% 39%, rgba(110,205,255,0.08) 0%, rgba(110,205,255,0.03) 3.2%, transparent 6.4%),
-    radial-gradient(circle at 67% 48%, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.02) 2.2%, transparent 5%);
-  filter:blur(1px);
+    radial-gradient(circle at 43% 44%, rgba(255,224,146,0.16) 0%, rgba(255,224,146,0.065) 2.4%, transparent 5.2%),
+    radial-gradient(circle at 36% 37%, rgba(255,150,82,0.14) 0%, rgba(255,150,82,0.052) 2.6%, transparent 5.8%),
+    radial-gradient(circle at 29% 30%, rgba(255,205,116,0.12) 0%, rgba(255,205,116,0.045) 2.2%, transparent 5.2%),
+    radial-gradient(circle at 22% 23%, rgba(130,205,255,0.09) 0%, rgba(130,205,255,0.035) 2.6%, transparent 6.2%),
+    radial-gradient(circle at 15% 16%, rgba(255,226,156,0.10) 0%, rgba(255,226,156,0.04) 2.2%, transparent 5.8%);
+  filter:blur(1.4px);
 }
 
 .intro-flare-ghosts::after {
   background:
-    radial-gradient(circle at 19% 14%, rgba(255,255,255,0.06) 0%, transparent 1.8%),
-    radial-gradient(circle at 33% 23%, rgba(160,205,255,0.05) 0%, transparent 2.1%),
-    radial-gradient(circle at 49% 34%, rgba(255,233,170,0.05) 0%, transparent 2%),
-    radial-gradient(circle at 62% 44%, rgba(140,205,255,0.05) 0%, transparent 2.3%);
-  filter:blur(6px);
+    radial-gradient(circle at 40% 41%, rgba(255,255,255,0.08) 0%, transparent 1.5%),
+    radial-gradient(circle at 33% 34%, rgba(255,176,92,0.08) 0%, transparent 1.9%),
+    radial-gradient(circle at 26% 27%, rgba(145,215,255,0.07) 0%, transparent 1.8%),
+    radial-gradient(circle at 18% 19%, rgba(255,232,170,0.07) 0%, transparent 2.2%),
+    radial-gradient(circle at 10% 11%, rgba(255,255,255,0.055) 0%, transparent 2.2%);
+  filter:blur(7px);
 }
 
 .intro-flare-bloom {
@@ -323,9 +311,9 @@ body.intro-active #mobile-backdrop {
   opacity:0;
   mix-blend-mode:screen;
   background:
-    radial-gradient(circle at 12% 12%, rgba(255,246,214,0.09) 0%, rgba(170,214,255,0.045) 7%, rgba(130,180,255,0.02) 14%, transparent 22%),
-    radial-gradient(circle at 12% 12%, rgba(255,255,255,0.05) 0%, transparent 8%);
-  filter:blur(24px);
+    radial-gradient(ellipse at 24% 24%, rgba(255,174,82,0.08) 0%, rgba(255,174,82,0.035) 18%, transparent 42%),
+    radial-gradient(ellipse at 12% 12%, rgba(255,236,186,0.07) 0%, rgba(255,236,186,0.03) 15%, transparent 35%);
+  filter:blur(26px);
   animation:introFlareBloom 10s ease forwards;
 }
 
@@ -495,25 +483,25 @@ body.intro-active #mobile-backdrop {
   100% { opacity:0.3; transform:scale(1); }
 }
 @keyframes introFlare {
-  0% { opacity:0; transform:translate(-48%, -47%) scale(0.92); }
-  24% { opacity:0.18; }
-  52% { opacity:0.52; }
-  72% { opacity:0.42; }
-  100% { opacity:0; transform:translate(-54%, -54%) scale(1.02); }
+  0% { opacity:0; transform:translate(1.2%, 1.2%) scale(0.96); }
+  24% { opacity:0.16; }
+  52% { opacity:0.48; }
+  72% { opacity:0.40; }
+  100% { opacity:0; transform:translate(-1.4%, -1.4%) scale(1.03); }
 }
 @keyframes introFlareGhosts {
-  0% { opacity:0; transform:translate(-2.5%, -3.5%) scale(0.96); }
+  0% { opacity:0; transform:translate(1.4%, 1.4%) scale(0.97); }
   26% { opacity:0.05; }
-  52% { opacity:0.26; }
-  74% { opacity:0.2; }
-  100% { opacity:0; transform:translate(0.8%, -0.5%) scale(1.02); }
+  52% { opacity:0.32; }
+  74% { opacity:0.24; }
+  100% { opacity:0; transform:translate(-1.0%, -1.0%) scale(1.03); }
 }
 @keyframes introFlareBloom {
-  0% { opacity:0; transform:translate(-2%, -2%) scale(0.88); }
-  20% { opacity:0.04; }
-  48% { opacity:0.18; }
-  70% { opacity:0.14; }
-  100% { opacity:0; transform:translate(-5%, -5%) scale(1.02); }
+  0% { opacity:0; transform:translate(1%, 1%) scale(0.92); }
+  20% { opacity:0.035; }
+  48% { opacity:0.16; }
+  70% { opacity:0.12; }
+  100% { opacity:0; transform:translate(-1.8%, -1.8%) scale(1.03); }
 }
 @keyframes introCredit {
   0%, 28% { opacity:0; letter-spacing:7px; transform:translate(-50%, calc(-50% - 108px)); }
