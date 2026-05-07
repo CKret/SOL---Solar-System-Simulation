@@ -10,10 +10,12 @@ This changelog is derived from the project's git commit messages and is listed n
 
 ### Changed
 - `60d4552` `import-samples` now syncs the authoritative body catalog before fetching Horizons chunks, so curated bodies are refreshed automatically at import start.
+- `65b40ea` Timeline hardpoints were streamlined for the usable simulation range: removed deep-time/far-future entries and added an `SL9 IMPACTS` hardpoint; timeline slider range expanded from ±500k years to ±4 billion years.
 
 ### Fixed
 - `60d4552` Ephemeris sample imports now stream rows directly into `SqlBulkCopy` instead of staging them fully in memory first.
 - `1773910` Fixed Shoemaker-Levy 9 fragment impacts (staggered impact sequence, nucleus hidden during fragment phase, fragments are individually focusable).
+- `65b40ea` Ephemeris sample cache now prunes stale data outside the active window margin before each progressive fetch, reducing long-session browser memory growth.
 
 ## 2026-05-07
 
