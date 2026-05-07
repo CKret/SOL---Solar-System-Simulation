@@ -11,11 +11,15 @@ This changelog is derived from the project's git commit messages and is listed n
 ### Changed
 - `60d4552` `import-samples` now syncs the authoritative body catalog before fetching Horizons chunks, so curated bodies are refreshed automatically at import start.
 - `65b40ea` Timeline hardpoints were streamlined for the usable simulation range: removed deep-time/far-future entries and added an `SL9 IMPACTS` hardpoint; timeline slider range expanded from ±500k years to ±4 billion years.
+- `221d29d` Ephemeris window requests now adapt payload size by fetch stage and current H-filtered body count, with coarser decade-stage sampling to reduce wide-window memory pressure.
+- `221d29d` Kepler mode now refreshes anchor offsets on timeline interactions while keeping ephemeris bulk-window refetch disabled.
 
 ### Fixed
 - `60d4552` Ephemeris sample imports now stream rows directly into `SqlBulkCopy` instead of staging them fully in memory first.
 - `1773910` Fixed Shoemaker-Levy 9 fragment impacts (staggered impact sequence, nucleus hidden during fragment phase, fragments are individually focusable).
 - `65b40ea` Ephemeris sample cache now prunes stale data outside the active window margin before each progressive fetch, reducing long-session browser memory growth.
+- `221d29d` Stale in-flight ephemeris fetches are now aborted on superseding requests/clears, preventing late high-volume responses from re-inflating memory after filter or mode changes.
+- `221d29d` Timeline display slider clamping now follows the configured slider `min`/`max` range instead of a hardcoded ±500k year clamp.
 
 ## 2026-05-07
 
