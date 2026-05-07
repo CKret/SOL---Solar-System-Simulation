@@ -1,6 +1,7 @@
 using Microsoft.Data.SqlClient;
 using Sol.Api.Models;
 using System.Data;
+using System.Data.Common;
 using System.Globalization;
 
 namespace Sol.Api.Services;
@@ -10,6 +11,8 @@ public sealed partial class HorizonsEphemerisSampleImporter(
   ISqlWriteConnectionFactory connectionFactory) : IEphemerisSampleImporter
 {
   private const string HorizonsApiBase = "https://ssd.jpl.nasa.gov/api/horizons.api";
+  private const string EphemerisFrame = "Ecliptic J2000 / Solar System Barycenter";
+  private const string EphemerisSource = "JPL Horizons API";
 
   private readonly HttpClient _httpClient = httpClient;
   private readonly ISqlWriteConnectionFactory _connectionFactory = connectionFactory;
@@ -28,6 +31,12 @@ public sealed partial class HorizonsEphemerisSampleImporter(
       ? JulianDateConverter.FromDateTime(DateTime.SpecifyKind(startUtc.Value, DateTimeKind.Utc)) : null;
     double? batchEndJd = endUtc.HasValue
       ? JulianDateConverter.FromDateTime(DateTime.SpecifyKind(endUtc.Value, DateTimeKind.Utc))   : null;
+
+    // Ensure the duplicate-check join key used by MERGE stays fast as the table grows.
+    await using (var setupConn = _connectionFactory.CreateConnection()) {
+      await setupConn.OpenAsync(cancellationToken);
+      await EnsureEphemerisMergeIndexAsync(setupConn, cancellationToken);
+    }
 
     var bodies = await LoadBodiesForEphemerisAsync(hMax, cancellationToken);
     Console.WriteLine($"Importing ephemeris for {bodies.Count:N0} bodies (hMax={hMax?.ToString() ?? "none"}, parallelism=5).");
@@ -351,9 +360,7 @@ public sealed partial class HorizonsEphemerisSampleImporter(
         double.Parse(cols[4], NumberStyles.Float, CultureInfo.InvariantCulture),
         double.Parse(cols[5], NumberStyles.Float, CultureInfo.InvariantCulture),
         double.Parse(cols[6], NumberStyles.Float, CultureInfo.InvariantCulture),
-        double.Parse(cols[7], NumberStyles.Float, CultureInfo.InvariantCulture),
-        "Ecliptic J2000 / Solar System Barycenter",
-        "JPL Horizons API"));
+        double.Parse(cols[7], NumberStyles.Float, CultureInfo.InvariantCulture)));
     }
 
     return rows;
@@ -725,13 +732,13 @@ CREATE TABLE #EphemerisStaging (
       await createCmd.ExecuteNonQueryAsync(ct);
 
     // Bulk-load into the staging table (outside any transaction).
-    var table = CreateSampleDataTable();
-    foreach (var s in samples)
-      table.Rows.Add(s.BodyId, s.SampleJd, s.X, s.Y, s.Z, s.Vx, s.Vy, s.Vz, s.Frame, s.Source);
+    using var sourceReader = new SampleImportRowDataReader(samples);
 
     using (var bulk = new SqlBulkCopy(conn, SqlBulkCopyOptions.Default, null) {
       DestinationTableName = "#EphemerisStaging",
-      BulkCopyTimeout = 0
+      BulkCopyTimeout = 0,
+      EnableStreaming = true,
+      BatchSize = 10_000
     }) {
       bulk.ColumnMappings.Add("BodyId",      "BodyId");
       bulk.ColumnMappings.Add("SampleJd",    "SampleJd");
@@ -743,7 +750,7 @@ CREATE TABLE #EphemerisStaging (
       bulk.ColumnMappings.Add("VZ_AUPerDay", "VZ_AUPerDay");
       bulk.ColumnMappings.Add("Frame",       "Frame");
       bulk.ColumnMappings.Add("Source",      "Source");
-      await bulk.WriteToServerAsync(table, ct);
+      await bulk.WriteToServerAsync(sourceReader, ct);
     }
 
     // Insert only rows that don't already exist. MERGE uses a join plan against
@@ -766,25 +773,100 @@ WHEN NOT MATCHED BY TARGET THEN INSERT (
     return inserted;
   }
 
-  private static DataTable CreateSampleDataTable()
+  private static async Task EnsureEphemerisMergeIndexAsync(SqlConnection conn, CancellationToken ct)
   {
-    var table = new DataTable();
-    table.Columns.Add("BodyId",      typeof(int));
-    table.Columns.Add("SampleJd",    typeof(double));
-    table.Columns.Add("X_AU",        typeof(double));
-    table.Columns.Add("Y_AU",        typeof(double));
-    table.Columns.Add("Z_AU",        typeof(double));
-    table.Columns.Add("VX_AUPerDay", typeof(double));
-    table.Columns.Add("VY_AUPerDay", typeof(double));
-    table.Columns.Add("VZ_AUPerDay", typeof(double));
-    table.Columns.Add("Frame",       typeof(string));
-    table.Columns.Add("Source",      typeof(string));
-    return table;
+    const string sql = @"
+IF NOT EXISTS (
+  SELECT 1
+  FROM sys.indexes
+  WHERE object_id = OBJECT_ID('dbo.EphemerisSamples')
+    AND name = 'IX_EphemerisSamples_BodyId_SampleJd'
+)
+BEGIN
+  CREATE UNIQUE NONCLUSTERED INDEX IX_EphemerisSamples_BodyId_SampleJd
+  ON dbo.EphemerisSamples (BodyId, SampleJd);
+END;";
+
+    await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 0 };
+    await cmd.ExecuteNonQueryAsync(ct);
   }
 
-  private sealed record SampleImportRow(
+  private sealed class SampleImportRowDataReader(IReadOnlyList<SampleImportRow> rows) : DbDataReader
+  {
+    private static readonly string[] _names = ["BodyId", "SampleJd", "X_AU", "Y_AU", "Z_AU", "VX_AUPerDay", "VY_AUPerDay", "VZ_AUPerDay", "Frame", "Source"];
+    private int _index = -1;
+
+    public override int FieldCount => _names.Length;
+    public override bool HasRows => rows.Count > 0;
+    public override bool IsClosed => false;
+    public override int RecordsAffected => -1;
+    public override int Depth => 0;
+
+    public override bool Read() => ++_index < rows.Count;
+    public override Task<bool> ReadAsync(CancellationToken cancellationToken) => Task.FromResult(Read());
+    public override bool NextResult() => false;
+    public override Task<bool> NextResultAsync(CancellationToken cancellationToken) => Task.FromResult(false);
+    public override string GetName(int ordinal) => _names[ordinal];
+    public override int GetOrdinal(string name) => Array.IndexOf(_names, name);
+    public override Type GetFieldType(int ordinal) => ordinal switch
+    {
+      0 => typeof(int),
+      8 or 9 => typeof(string),
+      _ => typeof(double)
+    };
+    public override object GetValue(int ordinal)
+    {
+      var r = rows[_index];
+      return ordinal switch
+      {
+        0 => r.BodyId,
+        1 => r.SampleJd,
+        2 => r.X,
+        3 => r.Y,
+        4 => r.Z,
+        5 => r.Vx,
+        6 => r.Vy,
+        7 => r.Vz,
+        8 => EphemerisFrame,
+        9 => EphemerisSource,
+        _ => throw new IndexOutOfRangeException()
+      };
+    }
+
+    public override int GetValues(object[] values)
+    {
+      var count = Math.Min(values.Length, FieldCount);
+      for (var i = 0; i < count; i++)
+        values[i] = GetValue(i);
+      return count;
+    }
+
+    public override bool IsDBNull(int ordinal) => false;
+    public override int GetInt32(int ordinal) => (int)GetValue(ordinal);
+    public override double GetDouble(int ordinal) => (double)GetValue(ordinal);
+    public override string GetString(int ordinal) => (string)GetValue(ordinal);
+    public override object this[int ordinal] => GetValue(ordinal);
+    public override object this[string name] => GetValue(GetOrdinal(name));
+
+    public override bool GetBoolean(int ordinal) => throw new NotSupportedException();
+    public override byte GetByte(int ordinal) => throw new NotSupportedException();
+    public override long GetBytes(int ordinal, long dataOffset, byte[]? buffer, int bufferOffset, int length) => throw new NotSupportedException();
+    public override char GetChar(int ordinal) => throw new NotSupportedException();
+    public override long GetChars(int ordinal, long dataOffset, char[]? buffer, int bufferOffset, int length) => throw new NotSupportedException();
+    public override DateTime GetDateTime(int ordinal) => throw new NotSupportedException();
+    public override decimal GetDecimal(int ordinal) => throw new NotSupportedException();
+    public override float GetFloat(int ordinal) => throw new NotSupportedException();
+    public override Guid GetGuid(int ordinal) => throw new NotSupportedException();
+    public override short GetInt16(int ordinal) => throw new NotSupportedException();
+    public override long GetInt64(int ordinal) => throw new NotSupportedException();
+    public override System.Collections.IEnumerator GetEnumerator() => throw new NotSupportedException();
+    public override string GetDataTypeName(int ordinal) => GetFieldType(ordinal).Name;
+    public override Stream GetStream(int ordinal) => throw new NotSupportedException();
+    public override TextReader GetTextReader(int ordinal) => throw new NotSupportedException();
+  }
+
+  private readonly record struct SampleImportRow(
     int BodyId, double SampleJd,
     double X, double Y, double Z,
-    double Vx, double Vy, double Vz,
-    string Frame, string Source);
+    double Vx, double Vy, double Vz);
 }

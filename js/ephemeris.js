@@ -39,6 +39,9 @@ const EphemerisSystem = (() => {
   let _mode     = 'kepler';    // 'kepler' | 'ephemeris'
   let _ready    = false;
   let _bodies   = [];          // raw API body list
+  let _loadedHMax = null;
+  let _bodyWarmupRunning = false;
+  let _bodyWarmupDone = false;
   let _keplerPositionProvider = null;
   let _cacheVersion = 0;       // increments whenever cached data changes
 
@@ -176,6 +179,7 @@ const EphemerisSystem = (() => {
   async function _loadBodies(hMax) {
     const hParam = hMax != null ? `?h_max=${hMax}` : '';
     const raw = await apiFetch(`/api/bodies${hParam}`);
+    _loadedHMax = hMax;
     _slugToId.clear();
     _bodyById.clear();
     _bodyBySlug.clear();
@@ -188,8 +192,86 @@ const EphemerisSystem = (() => {
     console.log(`[Ephemeris] Bodies loaded — ${_bodies.length} bodies (h_max=${hMax ?? 'none'}).`);
   }
 
+  function _mergeBodies(rows) {
+    if (!Array.isArray(rows) || rows.length === 0) return 0;
+    let added = 0;
+    for (const b of rows) {
+      if (!b || b.id == null) continue;
+      const existing = _bodyById.get(b.id);
+      if (!existing) {
+        _bodies.push(b);
+        added++;
+      }
+      _bodyById.set(b.id, b);
+      if (b.slug) {
+        _slugToId.set(b.slug, b.id);
+        _bodyBySlug.set(b.slug, b);
+      }
+    }
+    if (added > 0) _cacheVersion++;
+    return added;
+  }
+
+  async function _loadBodiesRange(minExclusive, maxInclusive, batchSize = 10000) {
+    let afterBodyId = null;
+    let total = 0;
+
+    for (;;) {
+      const params = new URLSearchParams();
+      if (maxInclusive != null) params.set('h_max', String(maxInclusive));
+      if (minExclusive != null) params.set('h_min_exclusive', String(minExclusive));
+      params.set('take', String(Math.max(1, Math.floor(batchSize))));
+      if (afterBodyId != null) params.set('afterBodyId', String(afterBodyId));
+
+      const batch = await apiFetch(`/api/bodies/batch?${params.toString()}`);
+      const rows = batch.items || [];
+      total += _mergeBodies(rows);
+      afterBodyId = batch.nextAfterBodyId ?? afterBodyId;
+      if (batch.done || rows.length === 0) break;
+    }
+
+    return total;
+  }
+
   async function loadBodies(hMax) {
-    await _loadBodies(hMax);
+    if (_loadedHMax == null || hMax == null || hMax <= _loadedHMax) {
+      await _loadBodies(hMax);
+      return;
+    }
+
+    const before = _bodies.length;
+    for (let step = Math.floor(_loadedHMax) + 1; step <= Math.floor(hMax); step++) {
+      await _loadBodiesRange(step - 1, step);
+      _loadedHMax = step;
+      console.log(`[Ephemeris] Incremental bodies warmup H<=${step}: ${_bodies.length.toLocaleString()} cached (+${(_bodies.length - before).toLocaleString()})`);
+    }
+    _loadedHMax = hMax;
+  }
+
+  async function warmBodiesInBackground(startH = 12, endH = 25, batchSize = 10000) {
+    if (_bodyWarmupRunning || _bodyWarmupDone || !_ready) return;
+    _bodyWarmupRunning = true;
+
+    try {
+      let current = _loadedHMax ?? startH;
+      if (current < startH) {
+        await loadBodies(startH);
+        current = startH;
+      }
+
+      for (let h = Math.floor(current) + 1; h <= Math.floor(endH); h++) {
+        const added = await _loadBodiesRange(h - 1, h, batchSize);
+        _loadedHMax = h;
+        console.log(`[Ephemeris] Background body warmup H(${h - 1}, ${h}] added ${added.toLocaleString()} bodies (total ${_bodies.length.toLocaleString()}).`);
+      }
+
+      _bodyWarmupDone = true;
+      console.log(`[Ephemeris] Background body warmup complete through H<=${Math.floor(endH)}. Cached ${_bodies.length.toLocaleString()} bodies.`);
+    } catch (err) {
+      console.warn('[Ephemeris] background body warmup failed:', err?.message || err);
+    } finally {
+      _bodyWarmupRunning = false;
+    }
   }
 
   async function init(options = {}) {
@@ -607,6 +689,7 @@ const EphemerisSystem = (() => {
     needsRefetch,
     getBodies,
     loadBodies,
+    warmBodiesInBackground,
 
     searchBodies,
     simTimeToJd,

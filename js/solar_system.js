@@ -3570,6 +3570,7 @@ function fetchEphemerisWindow(startSim, endSim) {
 function startIntroEphemerisPrefetch() {
   if (introPrefetchStarted || !EphemerisSystem.isReady()) return;
   introPrefetchStarted = true;
+  Promise.resolve(EphemerisSystem.warmBodiesInBackground(12, 25, 10000)).catch(() => {});
   fetchEphemerisWindow(simTime - 10, simTime + 10).catch(() => {});
 }
 

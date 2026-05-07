@@ -70,6 +70,51 @@ public sealed class SqlServerEphemerisRepository(ISqlConnectionFactory connectio
     return results;
   }
 
+  public async Task<IReadOnlyList<BodySummary>> GetBodiesBatchAsync(
+      double? hMinExclusive, double? hMaxInclusive, int take, int? afterBodyId, CancellationToken cancellationToken)
+  {
+    var sql = new StringBuilder("SELECT TOP (@take)")
+      .Append(BodyColumns)
+      .Append(" FROM dbo.Bodies b WHERE b.IsActive = 1");
+
+    if (afterBodyId.HasValue)
+      sql.Append(" AND b.BodyId > @afterBodyId");
+
+    if (hMaxInclusive.HasValue)
+    {
+      if (hMinExclusive.HasValue)
+      {
+        // Incremental H-step range: include only newly unlocked magnitude band.
+        sql.Append(" AND b.H_AbsMag IS NOT NULL AND b.H_AbsMag > @hMinExclusive AND b.H_AbsMag <= @hMaxInclusive");
+      }
+      else
+      {
+        // Initial pass: include authoritative bodies (H NULL) + bodies within threshold.
+        sql.Append(" AND (b.H_AbsMag IS NULL OR b.H_AbsMag <= @hMaxInclusive)");
+      }
+    }
+    else
+    {
+      sql.Append(" AND b.Source != 'mpcorb'");
+    }
+
+    sql.Append(" ORDER BY b.BodyId;");
+
+    await using var connection = _connectionFactory.CreateConnection();
+    await connection.OpenAsync(cancellationToken);
+    await using var command = new SqlCommand(sql.ToString(), connection) { CommandTimeout = 0 };
+    command.Parameters.AddWithValue("@take", Math.Clamp(take, 1, 50_000));
+    if (afterBodyId.HasValue) command.Parameters.AddWithValue("@afterBodyId", afterBodyId.Value);
+    if (hMinExclusive.HasValue) command.Parameters.AddWithValue("@hMinExclusive", hMinExclusive.Value);
+    if (hMaxInclusive.HasValue) command.Parameters.AddWithValue("@hMaxInclusive", hMaxInclusive.Value);
+
+    await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, cancellationToken);
+    var results = new List<BodySummary>();
+    while (await reader.ReadAsync(cancellationToken))
+      results.Add(ReadBodySummary(reader));
+    return results;
+  }
+
   public async Task<IReadOnlyList<BodySummary>> SearchBodiesAsync(
       string? query,
       int limit,
@@ -185,8 +230,8 @@ ORDER BY SampleJd;";
     return results;
   }
 
-  public async Task<IReadOnlyList<EphemerisSample>> GetBulkSamplesAsync(
-      DateTime startUtc, DateTime endUtc, double? hMax, int step, int? maxBodies, CancellationToken cancellationToken)
+      public async Task<IReadOnlyList<EphemerisSample>> GetBulkSamplesAsync(
+        DateTime startUtc, DateTime endUtc, double? hMax, int step, int? maxBodies, CancellationToken cancellationToken)
   {
     double startJd = JulianDateConverter.FromDateTime(DateTime.SpecifyKind(startUtc, DateTimeKind.Utc));
     double endJd   = JulianDateConverter.FromDateTime(DateTime.SpecifyKind(endUtc,   DateTimeKind.Utc));

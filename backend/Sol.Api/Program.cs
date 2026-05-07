@@ -74,6 +74,10 @@ if (args.Length > 0 && string.Equals(args[0], "import-samples", StringComparison
 	var sampleRate     = args.Length > 4 ? ParseSampleRate(args[4]) : null;
 
 	using var scope = app.Services.CreateScope();
+	var bodyImporter = scope.ServiceProvider.GetRequiredService<IBodyCatalogImporter>();
+	var bodyImportResult = await bodyImporter.ImportAsync(CancellationToken.None);
+	Console.WriteLine($"Body catalog synced. Inserted: {bodyImportResult.Inserted}, Updated: {bodyImportResult.Updated}, Total: {bodyImportResult.Total}.");
+
 	var importer = scope.ServiceProvider.GetRequiredService<IEphemerisSampleImporter>();
 	var result = await importer.ImportAsync(hMax, startUtc, endUtc, sampleRate, CancellationToken.None);
 	Console.WriteLine($"Ephemeris import complete. Bodies: {result.BodyCount:N0}, Samples: {result.SampleCount:N0}.");
@@ -91,6 +95,7 @@ app.MapGet("/", () => Results.Ok(new
 	{
 		"/api/health",
 		"/api/bodies?h_max=<magnitude>&maxBodies=<count>",
+		"/api/bodies/batch?h_max=<magnitude>&h_min_exclusive=<magnitude>&take=<count>&afterBodyId=<id>",
 		"/api/bodies/search?q=<text>&limit=<count>&namedOnly=<bool>",
 		"/api/bodies/{slug}",
 		"/api/ephemeris/window?centerUtc=...&radiusDays=...&h_max=<magnitude>&maxBodies=<count>",
@@ -110,6 +115,32 @@ app.MapGet("/api/bodies", async (double? h_max, int? maxBodies, IEphemerisReposi
 {
 	var bodies = await repository.GetBodiesAsync(h_max, maxBodies, cancellationToken);
 	return Results.Ok(bodies);
+});
+
+app.MapGet("/api/bodies/batch", async (
+	double? h_max,
+	double? h_min_exclusive,
+	int? take,
+	int? afterBodyId,
+	IEphemerisRepository repository,
+	CancellationToken cancellationToken) =>
+{
+	var batchSize = Math.Clamp(take ?? 10000, 1, 50000);
+	var rows = await repository.GetBodiesBatchAsync(h_min_exclusive, h_max, batchSize, afterBodyId, cancellationToken);
+	var nextAfterBodyId = rows.Count > 0 ? rows[^1].Id : afterBodyId;
+	var done = rows.Count < batchSize;
+
+	return Results.Ok(new
+	{
+		hMax = h_max,
+		hMinExclusive = h_min_exclusive,
+		take = batchSize,
+		afterBodyId,
+		nextAfterBodyId,
+		done,
+		count = rows.Count,
+		items = rows
+	});
 });
 
 app.MapGet("/api/bodies/search", async (string? q, int? limit, bool? namedOnly, IEphemerisRepository repository, CancellationToken cancellationToken) =>
