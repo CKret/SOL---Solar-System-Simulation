@@ -34,6 +34,9 @@ const EphemerisSystem = (() => {
   const MONTH_STAGE_STEP_DAYS = 1;
   const YEAR_STAGE_STEP_DAYS = 1;
   const DECADE_STAGE_STEP_DAYS = 2;
+  // How many days on each side of the target window to keep in the sample cache.
+  // Samples outside this band are pruned when a new fetch begins.
+  const CACHE_KEEP_MARGIN_DAYS = 365;
   // ── State ────────────────────────────────────────────────────────────────────
   let _apiBase  = 'http://localhost:5235';
   let _mode     = 'kepler';    // 'kepler' | 'ephemeris'
@@ -288,7 +291,28 @@ const EphemerisSystem = (() => {
     }
   }
 
+  function _pruneSampleCache() {
+    if (_targetStartJd == null || _targetEndJd == null) return;
+    const keepFrom = _targetStartJd - CACHE_KEEP_MARGIN_DAYS;
+    const keepTo   = _targetEndJd   + CACHE_KEEP_MARGIN_DAYS;
+    let pruned = 0;
+    for (const [bodyId, samples] of _cache) {
+      if (!samples || samples.length === 0) continue;
+      if (samples[0].jd >= keepFrom && samples[samples.length - 1].jd <= keepTo) continue;
+      const kept = samples.filter(s => s.jd >= keepFrom && s.jd <= keepTo);
+      pruned += samples.length - kept.length;
+      if (kept.length === 0) _cache.delete(bodyId);
+      else _cache.set(bodyId, kept);
+    }
+    if (pruned > 0) {
+      _cacheStartJd = keepFrom;
+      _cacheEndJd   = keepTo;
+      console.log(`[Ephemeris] Pruned ${pruned.toLocaleString()} old samples; cache window ${jdToIso(keepFrom)} → ${jdToIso(keepTo)}.`);
+    }
+  }
+
   async function _runProgressiveFetch(startSimTime, endSimTime, hMax) {
+    _pruneSampleCache();
     const mid = (startSimTime + endSimTime) / 2;
     const radius = Math.max(DAY_YEARS, Math.abs(endSimTime - startSimTime) / 2);
     const stages = [
