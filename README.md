@@ -95,6 +95,7 @@ The API uses `sol_reader` (read-only) at runtime. Import commands use `sol_user`
 
 - `GET /api/health`
 - `GET /api/bodies?h_max=<magnitude>&maxBodies=<count>` — returns active bodies with ephemeris data; `h_max` filters by absolute magnitude (omit for authoritative bodies only); `maxBodies` caps the result set
+- `GET /api/bodies/batch?h_max=<magnitude>&h_min_exclusive=<magnitude>&take=<count>&afterBodyId=<id>` — keyset-paginated body batches for incremental H-band loading; used by the intro/background warm-up path so the frontend can add newly unlocked minor planets without re-downloading earlier bands
 - `GET /api/bodies/{slug}` — single body by slug
 - `GET /api/bodies/search?q=<text>&limit=<n>&namedOnly=<bool>` — full-text search used by the in-app search panel
 - `GET /api/ephemeris/{bodyId}?startUtc=...&endUtc=...&limit=...` — samples for one body by numeric `BodyId`
@@ -127,13 +128,15 @@ dotnet run --project backend/Sol.Api -- import-samples [h_max] [startUtc] [endUt
 - `startUtc` / `endUtc`: optional batch window clipped to each body's stored Horizons range.
 - `step`: sample rate — `daily`, `hourly`, `<n>h`, `<n>d`. Defaults to 1 day.
 
+Before the sample import starts, the command now re-syncs the authoritative body catalog so newly changed Horizons IDs, date ranges, and curated-body metadata are present before chunk fetches begin.
+
 Example — import daily samples for all bodies brighter than H=15 (≈ 83,000 objects) over their full available date range:
 
 ```bash
 dotnet run --project backend/Sol.Api -- import-samples 15
 ```
 
-Imports are resumable: each fetched chunk is logged in `dbo.EphemerisImportLog` and skipped on re-runs. A body is marked `CompletedEphemeris=1` once its entire stored date range is fully logged. The importer runs 5 bodies in parallel.
+Imports are resumable: each fetched chunk is logged in `dbo.EphemerisImportLog` and skipped on re-runs. A body is marked `CompletedEphemeris=1` once its entire stored date range is fully logged. The importer runs 5 bodies in parallel, bulk-inserts samples through a streaming reader instead of staging a full in-memory `DataTable`, and creates the merge lookup index used by duplicate checks before the run so long imports do not degrade as sharply as the target table grows.
 
 **4. Retry zero-sample chunks** — retries import log chunks where Horizons previously returned zero samples, with optional boundary shrinking on edge chunks:
 
@@ -157,6 +160,7 @@ For IIS hosting, publish the app and point the IIS site at the published output.
 ### Ephemeris mode
 - Toggle between **Kepler mode** (fast analytical orbits) and **Ephemeris mode** (high-precision positions from the pre-computed SQL Server database).
 - In Ephemeris mode the frontend uses a progressive 4-stage fetch: ±1 day → ±1 month → ±1 year → ±10 years, so present-day positions are available almost immediately and longer-range cache builds in the background.
+- During the intro, body metadata now warms incrementally: the initial load starts with authoritative bodies plus objects up to `H <= 12`, then background requests expand one H band at a time through `H <= 25` via `/api/bodies/batch` so the searchable/renderable catalog grows without re-fetching already cached bodies.
 - Cached ephemeris positions are evaluated with Hermite interpolation (position + velocity), then mapped into scene coordinates.
 - Runtime selection is uniform across periodic bodies: use ephemeris where cached cadence is sufficient for the body's orbital period; otherwise fall back to Kepler (with anchors where available).
 - Ephemeris coverage varies by body. Most objects have pre-computed samples spanning roughly **1600–2500 AD**; a few bodies have shorter or longer ranges depending on what JPL Horizons provides for that object.
