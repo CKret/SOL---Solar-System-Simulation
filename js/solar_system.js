@@ -3382,8 +3382,33 @@ let realSizeMode = false;
 let followNowMode = false;
 let keplerAnchorProvider = null;
 let anchorRefreshSeq = 0;
+let keplerAnchorRefreshTimer = 0;
 let realtimeAnchorPerfMs = performance.now();
 let realtimeAnchorSimTime = simTime;
+
+function requestKeplerAnchorRefresh() {
+  if (EphemerisSystem.getMode() !== 'kepler') return;
+  if (!keplerAnchorProvider || !EphemerisSystem.isReady()) return;
+
+  const seq = ++anchorRefreshSeq;
+  Promise.resolve(EphemerisSystem.fetchAnchor(simTime, keplerAnchorProvider))
+    .then(() => {
+      if (seq !== anchorRefreshSeq) return;
+      // Kepler mode keeps only anchor offsets, not window sample caches.
+      EphemerisSystem.clearCache();
+      markOrbitLinesDirty();
+    })
+    .catch(() => {});
+}
+
+function scheduleKeplerAnchorRefresh(delayMs = 120) {
+  if (EphemerisSystem.getMode() !== 'kepler') return;
+  if (keplerAnchorRefreshTimer) window.clearTimeout(keplerAnchorRefreshTimer);
+  keplerAnchorRefreshTimer = window.setTimeout(() => {
+    keplerAnchorRefreshTimer = 0;
+    requestKeplerAnchorRefresh();
+  }, delayMs);
+}
 
 function rebaseRealtimeClock(targetSimTime = simTime) {
   realtimeAnchorPerfMs = performance.now();
@@ -3595,6 +3620,7 @@ function fetchEphemerisWindow(startSim, endSim) {
 
 function startIntroEphemerisPrefetch() {
   if (introPrefetchStarted || !EphemerisSystem.isReady()) return;
+  if (EphemerisSystem.getMode() !== 'ephemeris') return;
   introPrefetchStarted = true;
   fetchEphemerisWindow(simTime - 10, simTime + 10).catch(() => {});
 }
@@ -3646,9 +3672,13 @@ function syncEphemerisUi() {
 ephemerisBtn?.addEventListener('click', () => {
   const next = EphemerisSystem.getMode() === 'kepler' ? 'ephemeris' : 'kepler';
   EphemerisSystem.setMode(next);
+  if (next === 'kepler') {
+    EphemerisSystem.clearCache();
+    requestKeplerAnchorRefresh();
+  }
   markOrbitLinesDirty();
   syncEphemerisUi();
-  if (EphemerisSystem.isReady() && !EphemerisSystem.hasCachedWindow()) {
+  if (next === 'ephemeris' && EphemerisSystem.isReady() && !EphemerisSystem.hasCachedWindow()) {
     fetchEphemerisWindow(simTime - 10, simTime + 10).catch(() => {});
   }
   syncEphemerisObjectCount();
@@ -3697,7 +3727,11 @@ function updateTimelineDisplay() {
     lastTimelineLabel = nextLabel;
   }
   if (!timelineDragging) {
-    const nextSliderValue = Math.max(-5e5, Math.min(5e5, simTime));
+    const sliderMin = Number.parseFloat(tlEl.min);
+    const sliderMax = Number.parseFloat(tlEl.max);
+    const clampMin = Number.isFinite(sliderMin) ? sliderMin : -5e5;
+    const clampMax = Number.isFinite(sliderMax) ? sliderMax : 5e5;
+    const nextSliderValue = Math.max(clampMin, Math.min(clampMax, simTime));
     if (nextSliderValue !== lastTimelineSliderValue) {
       tlEl.value = nextSliderValue;
       lastTimelineSliderValue = nextSliderValue;
@@ -3714,6 +3748,7 @@ tlEl.addEventListener('input', () => {
   simTime = parseFloat(tlEl.value);
   if (realtimeMode) rebaseRealtimeClock(simTime);
   sunZ = simTime * GALACTIC_SCENE_SPEED;
+  scheduleKeplerAnchorRefresh();
   updateTimelineDisplay();
   syncTimelineHardpointUi();
 });
@@ -3725,6 +3760,7 @@ document.querySelectorAll('.tlstep').forEach(b => {
     simTime += parseFloat(b.dataset.step);
     if (realtimeMode) rebaseRealtimeClock(simTime);
     sunZ = simTime * GALACTIC_SCENE_SPEED;
+    scheduleKeplerAnchorRefresh(0);
     updateTimelineDisplay();
   });
 });
@@ -3737,6 +3773,7 @@ document.querySelectorAll('.tlhp').forEach(b => {
     simTime = isNowButton ? getCurrentSimTime() : parseFloat(b.dataset.year);
     if (realtimeMode) rebaseRealtimeClock(simTime);
     sunZ = simTime * GALACTIC_SCENE_SPEED;
+    scheduleKeplerAnchorRefresh(0);
     updateTimelineDisplay();
     syncTimelineHardpointUi();
   });
@@ -5389,7 +5426,7 @@ function animate(){
   }
 
   // ── Ephemeris auto-refetch ─────────────────────────────────────────────────
-  if (EphemerisSystem.isReady() && !EphemerisSystem.isFetching()) {
+  if (EphemerisSystem.getMode() === 'ephemeris' && EphemerisSystem.isReady() && !EphemerisSystem.isFetching()) {
     if (EphemerisSystem.needsRefetch(simTime, EPHEMERIS_REFETCH_MARGIN_YEARS)) {
       fetchEphemerisWindow(simTime - 10, simTime + 10).catch(() => {});
     }
@@ -5709,7 +5746,7 @@ function slugify(name) {
 
   syncEphemerisObjectCount();  // bodies are now loaded — update the display count
 
-  // Begin staged ephemeris prefetch during intro so cache is warm when UI unlocks.
+  // Begin staged ephemeris prefetch only when ephemeris mode is active.
   startIntroEphemerisPrefetch();
 
   const cometSlugMap = {

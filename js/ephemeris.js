@@ -33,7 +33,7 @@ const EphemerisSystem = (() => {
   const DAY_STAGE_STEP_DAYS = 1;
   const MONTH_STAGE_STEP_DAYS = 1;
   const YEAR_STAGE_STEP_DAYS = 1;
-  const DECADE_STAGE_STEP_DAYS = 2;
+  const DECADE_STAGE_STEP_DAYS = 10;
   // How many days on each side of the target window to keep in the sample cache.
   // Samples outside this band are pruned when a new fetch begins.
   const CACHE_KEEP_MARGIN_DAYS = 365;
@@ -47,6 +47,7 @@ const EphemerisSystem = (() => {
   let _bodyWarmupDone = false;
   let _keplerPositionProvider = null;
   let _cacheVersion = 0;       // increments whenever cached data changes
+  let _maxEphemerisBodies = null;
 
   // slug → bodyId map built from _bodies
   const _slugToId = new Map();
@@ -63,6 +64,7 @@ const EphemerisSystem = (() => {
   let _fetching     = false;
   let _queuedWindow = null;
   let _requestSerial = 0;
+  let _activeFetchController = null;
 
   // Kepler anchor: Map<bodyId, {dx, dy, dz}> (scene-unit offset to add to Kepler result)
   const _anchor = new Map();
@@ -163,8 +165,8 @@ const EphemerisSystem = (() => {
   }
 
   // ── Fetch helpers ─────────────────────────────────────────────────────────────
-  async function apiFetch(path) {
-    const r = await fetch(_apiBase + path);
+  async function apiFetch(path, signal = null) {
+    const r = await fetch(_apiBase + path, signal ? { signal } : undefined);
     if (!r.ok) throw new Error(`HTTP ${r.status} for ${path}`);
     return r.json();
   }
@@ -261,6 +263,11 @@ const EphemerisSystem = (() => {
 
   async function init(options = {}) {
     if (options.apiBase) _apiBase = options.apiBase;
+    if (Number.isFinite(options.maxEphemerisBodies)) {
+      _maxEphemerisBodies = Math.max(100, Math.min(5000, Math.floor(options.maxEphemerisBodies)));
+    } else {
+      _maxEphemerisBodies = null;
+    }
     try {
       await _loadBodies(options.hMax ?? null);
       _ready = true;
@@ -299,7 +306,11 @@ const EphemerisSystem = (() => {
     for (const [bodyId, samples] of _cache) {
       if (!samples || samples.length === 0) continue;
       if (samples[0].jd >= keepFrom && samples[samples.length - 1].jd <= keepTo) continue;
-      const kept = samples.filter(s => s.jd >= keepFrom && s.jd <= keepTo);
+      let startIdx = 0;
+      while (startIdx < samples.length && samples[startIdx].jd < keepFrom) startIdx++;
+      let endIdx = samples.length - 1;
+      while (endIdx >= startIdx && samples[endIdx].jd > keepTo) endIdx--;
+      const kept = endIdx >= startIdx ? samples.slice(startIdx, endIdx + 1) : [];
       pruned += samples.length - kept.length;
       if (kept.length === 0) _cache.delete(bodyId);
       else _cache.set(bodyId, kept);
@@ -340,6 +351,27 @@ const EphemerisSystem = (() => {
     }
   }
 
+  function getStageMaxBodies(stageLabel) {
+    if (Number.isFinite(_maxEphemerisBodies)) return _maxEphemerisBodies;
+    if (stageLabel === 'day') return 5000;
+    if (stageLabel === 'month') return 4500;
+    if (stageLabel === 'year') return 3000;
+    return 1800;
+  }
+
+  function getRequestedMaxBodies(hMax, stageLabel) {
+    const stageCap = getStageMaxBodies(stageLabel);
+    if (!Number.isFinite(stageCap)) return null;
+
+    // _loadBodies(hMax) already loads authoritative + H<=hMax, so this count
+    // naturally shrinks when user lowers H (e.g. 14 -> 12).
+    let available = _bodies.length;
+    if (hMax != null) {
+      available = _bodies.reduce((n, b) => n + ((b.h_AbsMag == null || b.h_AbsMag <= hMax) ? 1 : 0), 0);
+    }
+    return Math.max(1, Math.min(stageCap, available));
+  }
+
   // Fetches one window and merges it into the existing cache so the renderer keeps
   // using the best data already available while broader windows stream in.
   async function _doFetch(centerSimTime, radiusYears, hMax, step, stageLabel, requestId) {
@@ -348,10 +380,20 @@ const EphemerisSystem = (() => {
     const startJd = centerJd - radiusDays;
     const endJd = centerJd + radiusDays;
     const hParam  = hMax != null ? `&h_max=${hMax}` : '';
-    const url = `/api/ephemeris/window?centerUtc=${encodeURIComponent(jdToIso(centerJd))}&radiusDays=${radiusDays}&step=${step}${hParam}`;
+    const maxBodies = getRequestedMaxBodies(hMax, stageLabel);
+    const maxBodiesParam = Number.isFinite(maxBodies) ? `&maxBodies=${maxBodies}` : '';
+    const url = `/api/ephemeris/window?centerUtc=${encodeURIComponent(jdToIso(centerJd))}&radiusDays=${radiusDays}&step=${step}${hParam}${maxBodiesParam}`;
 
     console.log(`[Ephemeris] Fetching ${stageLabel} (step=${step}) centered ${jdToIso(centerJd)} radius ${radiusDays.toFixed(1)}d`);
-    const data = await apiFetch(url);   // throws on HTTP error; cache unchanged
+    if (_activeFetchController) _activeFetchController.abort();
+    const controller = new AbortController();
+    _activeFetchController = controller;
+    let data;
+    try {
+      data = await apiFetch(url, controller.signal);   // throws on HTTP error; cache unchanged
+    } finally {
+      if (_activeFetchController === controller) _activeFetchController = null;
+    }
     if (requestId !== _requestSerial) return;
 
     const normalizedSamples = toHeliocentricSamples(data.samples || []);
@@ -595,6 +637,10 @@ const EphemerisSystem = (() => {
 
   function clearCache() {
     _requestSerial++;
+    if (_activeFetchController) {
+      _activeFetchController.abort();
+      _activeFetchController = null;
+    }
     _queuedWindow = null;
     _cache.clear();
     _cacheStartJd = null;
