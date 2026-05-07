@@ -32,21 +32,15 @@ public sealed partial class HorizonsEphemerisSampleImporter(
     double? batchEndJd = endUtc.HasValue
       ? JulianDateConverter.FromDateTime(DateTime.SpecifyKind(endUtc.Value, DateTimeKind.Utc))   : null;
 
-    // Ensure the duplicate-check join key used by MERGE stays fast as the table grows.
-    await using (var setupConn = _connectionFactory.CreateConnection()) {
-      await setupConn.OpenAsync(cancellationToken);
-      await EnsureEphemerisMergeIndexAsync(setupConn, cancellationToken);
-    }
-
     var bodies = await LoadBodiesForEphemerisAsync(hMax, cancellationToken);
-    Console.WriteLine($"Importing ephemeris for {bodies.Count:N0} bodies (hMax={hMax?.ToString() ?? "none"}, parallelism=5).");
+    Console.WriteLine($"Importing ephemeris for {bodies.Count:N0} bodies (hMax={hMax?.ToString() ?? "none"}, parallelism=2).");
 
     int totalBodies = 0, totalSamples = 0, completed = 0;
     var step = sampleRateOverride ?? TimeSpan.FromDays(1);
 
     await Parallel.ForEachAsync(
       bodies,
-      new ParallelOptions { MaxDegreeOfParallelism = 5, CancellationToken = cancellationToken },
+      new ParallelOptions { MaxDegreeOfParallelism = 2, CancellationToken = cancellationToken },
       async ((int BodyId, string Slug, string JplId, double MinJd, double MaxJd) body, CancellationToken ct) =>
       {
         var (bodyId, slug, jplId, minJd, maxJd) = body;
@@ -137,6 +131,7 @@ public sealed partial class HorizonsEphemerisSampleImporter(
       if (loggedChunks.Contains((winStart, winEnd))) continue;
 
       Console.WriteLine($"    {slug} {chunkIndex}/{totalChunks} JD{winStart:F0}..JD{winEnd:F0}");
+      await Task.Delay(1000, ct); // avoid JPL Horizons rate limiting
       var fetch = await FetchAndInsertChunkAsync(conn, bodyId, slug, horizonsCommand, winStart, winEnd, step, ct);
       if (fetch.Inserted < 0) continue; // transient HTTP error — do not log, allow retry
 
@@ -771,24 +766,6 @@ WHEN NOT MATCHED BY TARGET THEN INSERT (
     int inserted = await insertCmd.ExecuteNonQueryAsync(ct);
     await tx.CommitAsync(ct);
     return inserted;
-  }
-
-  private static async Task EnsureEphemerisMergeIndexAsync(SqlConnection conn, CancellationToken ct)
-  {
-    const string sql = @"
-IF NOT EXISTS (
-  SELECT 1
-  FROM sys.indexes
-  WHERE object_id = OBJECT_ID('dbo.EphemerisSamples')
-    AND name = 'IX_EphemerisSamples_BodyId_SampleJd'
-)
-BEGIN
-  CREATE UNIQUE NONCLUSTERED INDEX IX_EphemerisSamples_BodyId_SampleJd
-  ON dbo.EphemerisSamples (BodyId, SampleJd);
-END;";
-
-    await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 0 };
-    await cmd.ExecuteNonQueryAsync(ct);
   }
 
   private sealed class SampleImportRowDataReader(IReadOnlyList<SampleImportRow> rows) : DbDataReader

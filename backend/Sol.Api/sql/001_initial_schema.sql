@@ -109,6 +109,10 @@ CREATE TABLE dbo.EphemerisSamples (
 );
 GO
 
+CREATE UNIQUE NONCLUSTERED INDEX IX_EphemerisSamples_BodyId_SampleJd
+  ON dbo.EphemerisSamples (BodyId, SampleJd);
+GO
+
 -- ============================================================
 -- dbo.EphemerisImportLog
 -- Tracks every chunk [StartJd, EndJd] attempted per body so

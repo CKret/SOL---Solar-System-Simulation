@@ -25,13 +25,20 @@ public sealed partial class AuthoritativeBodyCatalogReader : IAuthoritativeBodyC
     {
         var seeds = new List<CatalogBodySeed>();
 
-        foreach (var target in AuthoritativeCatalogManifest.Targets.Where(target => target.HorizonsCommand is not null && target.SbdbDesignation is null))
+        var horizonsTargets = AuthoritativeCatalogManifest.Targets.Where(target => target.HorizonsCommand is not null && target.SbdbDesignation is null).ToList();
+        var sbdbTargets = AuthoritativeCatalogManifest.Targets.Where(target => target.SbdbDesignation is not null).ToList();
+        var total = horizonsTargets.Count + sbdbTargets.Count;
+        var done = 0;
+
+        foreach (var target in horizonsTargets)
         {
+            Console.WriteLine($"  Syncing body catalog [{++done}/{total}]: {target.HorizonsCommand}");
             seeds.Add(await ReadHorizonsSeedAsync(target, cancellationToken));
         }
 
-        foreach (var target in AuthoritativeCatalogManifest.Targets.Where(target => target.SbdbDesignation is not null))
+        foreach (var target in sbdbTargets)
         {
+            Console.WriteLine($"  Syncing body catalog [{++done}/{total}]: {target.SbdbDesignation}");
             var seed = await ReadSbdbSeedAsync(target, cancellationToken);
             if (seed is not null) seeds.Add(seed);
         }
