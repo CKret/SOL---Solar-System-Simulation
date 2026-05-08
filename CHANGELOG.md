@@ -4,6 +4,15 @@ This changelog is derived from the project's git commit messages and is listed n
 
 ## 2026-05-09
 
+### Fixed
+- `6f3f1e3` Fixed Kepler orbit line behavior so the line geometry stays aligned with the current moon period source instead of jumping in Kepler mode.
+
+### Changed
+- `6f3f1e3` Renamed the small-body magnitude slider label for the H-absolute-magnitude threshold control.
+
+### Documentation
+- `6f3f1e3` README wording was updated to match the current small-bodies label and behavior.
+
 ### Added
 - `22329a5` Added orbit-extrema details to the object info panel: perihelion/aphelion plus ETA for heliocentric bodies, and periapsis/apoapsis plus ETA for moons.
 - `22329a5` Added targeted per-body ephemeris range fetching so long-period authoritative bodies can extend beyond the baseline cached window without expanding the global fetch for the full catalog.
