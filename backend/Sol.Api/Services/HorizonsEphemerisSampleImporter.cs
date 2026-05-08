@@ -763,9 +763,18 @@ WHEN NOT MATCHED BY TARGET THEN INSERT (
 
     await using var tx = (SqlTransaction)await conn.BeginTransactionAsync(ct);
     await using var insertCmd = new SqlCommand(insertSql, conn, tx) { CommandTimeout = 0 };
-    int inserted = await insertCmd.ExecuteNonQueryAsync(ct);
-    await tx.CommitAsync(ct);
-    return inserted;
+    try {
+      int inserted = await insertCmd.ExecuteNonQueryAsync(ct);
+      await tx.CommitAsync(ct);
+      return inserted;
+    }
+    catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 2627) {
+      // PK violation: data already exists (e.g. chunk overlaps a previously imported run).
+      // Roll back and return 0 — caller logs samples.Count so the chunk is marked done.
+      await tx.RollbackAsync(ct);
+      Console.WriteLine($"    [dup] chunk already fully present, skipping insert.");
+      return 0;
+    }
   }
 
   private sealed class SampleImportRowDataReader(IReadOnlyList<SampleImportRow> rows) : DbDataReader
