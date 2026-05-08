@@ -4,7 +4,7 @@ A browser-based 3D solar system and deep-time space visualizer built with Three.
 
 ## Run It
 
-The full experience requires the ephemeris backend: an ASP.NET Core API backed by a SQL Server `sol_ephemeris` database populated via the import commands described in [Ephemeris API](#ephemeris-api). With the backend running, **EPHEMERIS ON** uses JPL-sourced trajectory samples when cached data exists and cadence is sufficient for that body's orbital period, and falls back to anchored Kepler propagation otherwise. The **EPH OBJECTS** slider renders a cloud of up to 8,000 real minor-planet positions in the scene. The API base path is hardcoded to `/sol-api`, matching the production IIS layout.
+The full experience requires the ephemeris backend: an ASP.NET Core API backed by a SQL Server `sol_ephemeris` database populated via the import commands described in [Ephemeris API](#ephemeris-api). With the backend running, **EPHEMERIS ON** uses JPL-sourced trajectory samples when cached data exists and cadence is sufficient for that body's orbital period, and falls back to anchored Kepler propagation otherwise. The **EPH OBJECTS** slider controls the absolute-magnitude threshold used to load real minor-planet positions from the database. The API base path is hardcoded to `/sol-api`, matching the production IIS layout.
 
 The frontend also runs without the backend. Serve the project root with any static file server:
 
@@ -155,7 +155,7 @@ For IIS hosting, publish the app and point the IIS site at the published output.
 - 9 dwarf planets: Ceres, Pluto, Eris, Makemake, Haumea, Sedna, Gonggong, Quaoar, and Orcus.
 - 10 named comets: Halley's, Hale-Bopp, Hyakutake, Encke, 67P/Churyumov-Gerasimenko, Tempel 1, Wild 2, Shoemaker-Levy 9, NEOWISE, and Ikeya-Seki.
 - Both Voyager probes with trajectory data.
-- Dense small-body fields for the asteroid belt, Kuiper belt, scattered disc, and Oort cloud, with 15,500 simulated small-body particles in total.
+- Database-backed minor-planet coverage from the 1.5M+ object MPCORB catalog, with **EPH OBJECTS** controlling the active absolute-magnitude threshold for ephemeris-driven asteroid/TNO rendering. A separate procedural Oort cloud remains as a distant background population.
 
 ### Ephemeris mode
 - Toggle between **Kepler mode** (fast analytical orbits) and **Ephemeris mode** (high-precision positions from the pre-computed SQL Server database).
@@ -167,7 +167,7 @@ For IIS hosting, publish the app and point the IIS site at the published output.
 - Ephemeris coverage varies by body. Most objects have pre-computed samples spanning roughly **1600–2500 AD**; a few bodies have shorter or longer ranges depending on what JPL Horizons provides for that object.
 - Orbit lines update automatically whenever new cache data arrives, and are continuously pinned to the body's exact current position each frame so they never visibly drift.
 - Orbit-line color indicates what is currently in use: blue when a body is using ephemeris at the current time, grey when it is falling back to Kepler.
-- The **EPH OBJECTS** slider controls how many minor-planet bodies (sorted by absolute magnitude, brightest first) are fetched from the database and rendered as real-position point particles in the scene. Drag the slider up to 8,000 to show a cloud of real asteroid/TNO positions, or down to reduce the count. These particles render in Solar view and are intended for ephemeris-driven exploration.
+- The **EPH OBJECTS** slider controls the absolute-magnitude threshold used to fetch minor-planet bodies from the database and render them as real-position point particles in the scene. Raising the threshold includes progressively dimmer and more numerous catalog objects; lowering it restricts the scene to brighter bodies. These particles render in Solar view and are intended for ephemeris-driven exploration.
 
 ### Sky and time
 - Bright-star catalog with spectral coloring and proper motion.
@@ -184,7 +184,7 @@ For IIS hosting, publish the app and point the IIS site at the published output.
 ## Tracked Objects
 
 - Focusable tracked objects include the Sun, planets, moons, dwarf planets, named comets, and both Voyager probes.
-- In addition to curated tracked objects, the ephemeris backend can stream a much larger minor-planet set from the database (via **EPH OBJECTS**), and the scene also includes dense procedural belts/cloud populations.
+- In addition to curated tracked objects, the ephemeris backend can stream a much larger minor-planet set from the database (via **EPH OBJECTS**), while the distant Oort cloud remains a separate procedural background population.
 
 ### Views and navigation
 - `SOLAR SYSTEM` view for the standard orbital layout.
@@ -200,7 +200,7 @@ For IIS hosting, publish the app and point the IIS site at the published output.
 - Built-in help overlay and keyboard shortcut guide, opened from the bottom-left help button.
 - Toggle buttons for realtime, real-size rendering, trails, orbits, constellations, look-at-Sun mode, and geo lock.
 - **KEPLER MODE / EPHEMERIS ON** toggle switches between analytical orbits and database-backed high-precision positions.
-- **EPH OBJECTS** slider (100–8,000) sets how many minor-planet positions are fetched and rendered when in Ephemeris mode.
+- **EPH OBJECTS** slider (`H = 0–25`) sets the absolute-magnitude threshold for minor-planet positions fetched and rendered in Ephemeris mode.
 - Orion shortcut button (`HUNTER / ORION`) for quick sky focus.
 - Responsive mobile UI with a bottom dock and dedicated Search, Objects, Time, and Controls sheets.
 - Touch-safe mobile search, panel management, and object info behavior.
@@ -248,7 +248,7 @@ For IIS hosting, publish the app and point the IIS site at the published output.
 - Planets, moons, dwarf planets, and comets are propagated from analytical orbital elements rather than hand-authored animation paths. The simulation advances mean anomaly as $M(t)=M_0+2\pi t/P$, solves Kepler's equation $M=E-e\sin E$ with a Newton-style iterative solver, converts eccentric anomaly $E$ to true anomaly, and then rotates the orbit into 3D ecliptic space using inclination $i$, ascending node $\Omega$, and argument/longitude terms derived from the source elements.
 - Orbit shapes are true ellipses built from the semimajor axis and eccentricity, using $b=a\sqrt{1-e^2}$ for the semiminor axis and $c=ae$ for the focus offset.
 - Major planets use time-varying secular elements rather than a single frozen J2000 orbit, which improves present-day alignment and probe flyby plausibility while keeping the model analytical and usable into the future.
-- Belt and cloud particles are also given orbital parameters and periods from Kepler's third law, $P\propto a^{3/2}$, so the asteroid belt, Kuiper belt, scattered disc, and Oort cloud are orbiting populations rather than static point clouds.
+- The remaining procedural Oort-cloud particles are given orbital parameters and periods from Kepler's third law, $P\propto a^{3/2}$, so that distant background population still evolves over time rather than staying static.
 - Bright stars use catalog right ascension, declination, and proper motion in a J2000 frame. Their sky positions are advanced with linear proper-motion drift over simulation time, so constellations slowly deform across deep time instead of staying fixed.
 - Earth's axial rotation for present-day viewing is anchored to Greenwich sidereal time, so realtime illumination now lines up much more closely with actual UTC-based local daylight.
 - Moon orientation uses explicit per-moon spin handling. Regular moons default to synchronous parent-facing rotation, Earth's Moon keeps its tuned tidal-lock presentation offsets, several irregular moons use measured sidereal spin periods, and Hyperion is treated as a chaotic rotator rather than a locked body. The Moon's current orbital phase is also calibrated to a known new-moon epoch so realtime illumination is more plausible, while still remaining an analytical approximation rather than a full lunar ephemeris.
@@ -271,7 +271,7 @@ For IIS hosting, publish the app and point the IIS site at the published output.
 - This project intentionally stays analytical for most solar-system bodies so it can remain explorable into the deep future and deep past; outside of historically sampled spacecraft such as Voyager, it does not attempt full ephemeris playback.
 - The bright-star model uses linear proper-motion extrapolation and is clamped to about $\pm10$ million years, which is a practical approximation rather than a full galactic-dynamics solution.
 - Voyager playback is only exact within the sampled Horizons interval included in the project; outside that range the code falls back to simple linear extrapolation from the final segment.
-- The asteroid belt, Kuiper belt, scattered disc, and Oort cloud are procedural populations with randomized orbital parameters chosen to match the intended structure, not catalog-complete reconstructions of known small bodies.
+- The asteroid belt, Kuiper belt, and scattered-disc visuals now rely on the catalog/database path when ephemeris-backed small bodies are loaded rather than on always-on procedural populations. The Oort cloud remains a procedural population with randomized orbital parameters chosen to match the intended structure, not a catalog-complete reconstruction of known distant bodies.
 - A few small outer irregular moons in the current set still lack reliable published spin periods in the simulator data, so they are intentionally left without a claimed physically accurate spin solution instead of being assigned invented orbital-period rotation.
 - Background stars, visual glow effects, and several atmospheric or storm-style surface effects are artistic or procedural layers added for presentation rather than strict scientific reconstruction.
 - Distances follow the simulator's AU-to-scene conversion, but body radii, line thicknesses, trail density, and other render-scale choices are adjusted for legibility and interaction instead of strict one-to-one physical scale. `REAL SIZE` reduces that exaggeration substantially, but camera floors and interaction radii still include pragmatic visual compromises.
