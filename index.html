@@ -831,6 +831,7 @@ body.mobile-ui #fullscreen-btn {
   position:fixed; top:16px; left:16px; pointer-events:none;
   background:rgba(0,0,0,0.72); border:1px solid rgba(255,255,255,0.1);
   border-radius:4px; padding:14px 16px; display:none; min-width:210px;
+  max-height:520px; overflow-y:auto;
 }
 #planet-info.show { display:block; pointer-events:auto; }
 #planet-info-head {
@@ -1667,9 +1668,12 @@ body:not(.mobile-ui) #focus-bar {
   <div class="pi-row"><span id="pi-lbl-dist">FROM SUN</span><span class="pi-val" id="pi-dist">—</span></div>
   <div class="pi-row"><span id="pi-lbl-year">PERIOD</span><span class="pi-val" id="pi-year">—</span></div>
   <div class="pi-row"><span id="pi-lbl-moons">MOONS</span><span class="pi-val" id="pi-moons">—</span></div>
+  <div class="pi-row"><span id="pi-lbl-peri">PERIHELION</span><span class="pi-val" id="pi-peri">—</span></div>
+  <div class="pi-row"><span id="pi-lbl-eta-peri">ETA TO PERIHELION</span><span class="pi-val" id="pi-eta-peri">—</span></div>
+  <div class="pi-row"><span id="pi-lbl-ap">APHELION</span><span class="pi-val" id="pi-ap">—</span></div>
+  <div class="pi-row"><span id="pi-lbl-eta-ap">ETA TO APHELION</span><span class="pi-val" id="pi-eta-ap">—</span></div>
   <div class="pi-row"><span id="pi-lbl-vel">ORBITAL SPEED</span><span class="pi-val" id="pi-vel">—</span></div>
   <div class="pi-row"><span id="pi-lbl-type">TYPE</span><span class="pi-val" id="pi-type">—</span></div>
-  <div class="pi-row" style="margin-top:8px;margin-bottom:0;color:rgba(255,255,255,0.24)"><span>ESC</span><span class="pi-val" style="color:rgba(255,255,255,0.45)">clear focus</span></div>
 </div>
 <button id="info-toggle-btn" type="button" aria-label="Show info panel">Show info</button>
 <div id="constellation-labels"></div>

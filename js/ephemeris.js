@@ -153,8 +153,7 @@ const EphemerisSystem = (() => {
     const jd = simTimeToJd(simTimeYears);
     let lo = 0, hi = samples.length - 1;
 
-    if (jd <= samples[lo].jd) return samples[1].jd - samples[0].jd;
-    if (jd >= samples[hi].jd) return samples[hi].jd - samples[hi - 1].jd;
+    if (jd < samples[lo].jd || jd > samples[hi].jd) return null;
 
     while (hi - lo > 1) {
       const mid = (lo + hi) >>> 1;
@@ -281,9 +280,10 @@ const EphemerisSystem = (() => {
   // Progressive 4-pass load: ±1 day → ±1 month → ±1 year → requested outer window.
   // hMax: if provided, includes small bodies where H <= hMax (otherwise authoritative only).
   async function fetchWindow(startSimTime, endSimTime, hMax) {
+    const effectiveHMax = hMax ?? _loadedHMax;
     _targetStartJd = simTimeToJd(startSimTime);
     _targetEndJd = simTimeToJd(endSimTime);
-    _queuedWindow = { startSimTime, endSimTime, hMax };
+    _queuedWindow = { startSimTime, endSimTime, hMax: effectiveHMax };
     if (_fetching) return;
 
     _fetching = true;
@@ -351,25 +351,12 @@ const EphemerisSystem = (() => {
     }
   }
 
-  function getStageMaxBodies(stageLabel) {
-    if (Number.isFinite(_maxEphemerisBodies)) return _maxEphemerisBodies;
-    if (stageLabel === 'day') return 5000;
-    if (stageLabel === 'month') return 4500;
-    if (stageLabel === 'year') return 3000;
-    return 1800;
-  }
-
   function getRequestedMaxBodies(hMax, stageLabel) {
-    const stageCap = getStageMaxBodies(stageLabel);
-    if (!Number.isFinite(stageCap)) return null;
-
-    // _loadBodies(hMax) already loads authoritative + H<=hMax, so this count
-    // naturally shrinks when user lowers H (e.g. 14 -> 12).
-    let available = _bodies.length;
-    if (hMax != null) {
-      available = _bodies.reduce((n, b) => n + ((b.h_AbsMag == null || b.h_AbsMag <= hMax) ? 1 : 0), 0);
-    }
-    return Math.max(1, Math.min(stageCap, available));
+    // User-configured override only — no hardcoded stage caps.
+    // Fetching all bodies with H <= hMax ensures no authoritative body (planet, moon)
+    // gets silently dropped by an arbitrary per-stage limit.
+    if (Number.isFinite(_maxEphemerisBodies)) return _maxEphemerisBodies;
+    return null;
   }
 
   // Fetches one window and merges it into the existing cache so the renderer keeps
@@ -721,9 +708,99 @@ const EphemerisSystem = (() => {
     return jd <= (_targetStartJd + marginJd) || jd >= (_targetEndJd - marginJd);
   }
 
+  function getEphemerisWindowDays(bodyId) {
+    const body = _bodyById.get(bodyId);
+    if (!body?.hasEphemeris || body.ephemerisMinJD == null || body.ephemerisMaxJD == null) {
+      return null;
+    }
+    return body.ephemerisMaxJD - body.ephemerisMinJD;
+  }
+
+  async function fetchBodyRange(bodyId, startSimTime, endSimTime, limit = null) {
+    if (bodyId == null) return false;
+
+    let startJd = simTimeToJd(startSimTime);
+    let endJd = simTimeToJd(endSimTime);
+    if (endJd < startJd) {
+      const tmp = startJd;
+      startJd = endJd;
+      endJd = tmp;
+    }
+
+    const startUtc = jdToIso(startJd);
+    const endUtc = jdToIso(endJd);
+    const safeLimit = Number.isFinite(limit) ? Math.max(2, Math.floor(limit)) : null;
+    const limitParam = safeLimit != null ? `&limit=${safeLimit}` : '';
+    const bodyUrl = `/api/ephemeris/${bodyId}?startUtc=${encodeURIComponent(startUtc)}&endUtc=${encodeURIComponent(endUtc)}${limitParam}`;
+
+    const sunBodyId = _slugToId.get('sun');
+    const fetchSun = sunBodyId != null && sunBodyId !== bodyId;
+    const sunUrl = fetchSun
+      ? `/api/ephemeris/${sunBodyId}?startUtc=${encodeURIComponent(startUtc)}&endUtc=${encodeURIComponent(endUtc)}${limitParam}`
+      : null;
+
+    const [bodyData, sunData] = await Promise.all([
+      apiFetch(bodyUrl),
+      sunUrl ? apiFetch(sunUrl) : Promise.resolve(null),
+    ]);
+
+    const bodyRaw = Array.isArray(bodyData?.samples) ? bodyData.samples : [];
+    const sunRaw = Array.isArray(sunData?.samples) ? sunData.samples : [];
+    if (bodyRaw.length === 0) return false;
+
+    const bodyScene = bodyRaw.map((s) => {
+      const pos = toScene(s.x, s.y, s.z);
+      const vel = (s.vx != null) ? velToScene(s.vx, s.vy, s.vz) : { x: null, y: null, z: null };
+      return { jd: s.sampleJd, x: pos.x, y: pos.y, z: pos.z, vx: vel.x, vy: vel.y, vz: vel.z };
+    }).sort((a, b) => a.jd - b.jd);
+
+    const sunScene = sunRaw.map((s) => {
+      const pos = toScene(s.x, s.y, s.z);
+      const vel = (s.vx != null) ? velToScene(s.vx, s.vy, s.vz) : { x: null, y: null, z: null };
+      return { jd: s.sampleJd, x: pos.x, y: pos.y, z: pos.z, vx: vel.x, vy: vel.y, vz: vel.z };
+    }).sort((a, b) => a.jd - b.jd);
+
+    const sunByJd = new Map();
+    for (const s of sunScene) sunByJd.set(Number(s.jd).toFixed(8), s);
+
+    const bodyHeliocentric = bodyScene.map((sample) => {
+      let sun = sunByJd.get(Number(sample.jd).toFixed(8));
+      if (!sun && sunScene.length > 0) {
+        const sunInterp = interpolateAt(sunScene, sample.jd);
+        if (sunInterp) {
+          sun = { jd: sample.jd, x: sunInterp.x, y: sunInterp.y, z: sunInterp.z, vx: null, vy: null, vz: null };
+        }
+      }
+
+      if (!sun) return sample;
+      return {
+        jd: sample.jd,
+        x: sample.x - sun.x,
+        y: sample.y - sun.y,
+        z: sample.z - sun.z,
+        vx: (sample.vx != null && sun.vx != null) ? (sample.vx - sun.vx) : sample.vx,
+        vy: (sample.vy != null && sun.vy != null) ? (sample.vy - sun.vy) : sample.vy,
+        vz: (sample.vz != null && sun.vz != null) ? (sample.vz - sun.vz) : sample.vz,
+      };
+    });
+
+    _cache.set(bodyId, mergeSamples(_cache.get(bodyId) || [], bodyHeliocentric));
+
+    if (sunBodyId != null && sunScene.length > 0) {
+      const sunZero = sunScene.map((s) => ({ jd: s.jd, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0 }));
+      _cache.set(sunBodyId, mergeSamples(_cache.get(sunBodyId) || [], sunZero));
+    }
+
+    _cacheStartJd = _cacheStartJd == null ? startJd : Math.min(_cacheStartJd, startJd);
+    _cacheEndJd = _cacheEndJd == null ? endJd : Math.max(_cacheEndJd, endJd);
+    _cacheVersion++;
+    return true;
+  }
+
   return {
     init,
     fetchWindow,
+    fetchBodyRange,
     fetchAnchor,
     getPosition,
     getTrajectory,
@@ -741,6 +818,7 @@ const EphemerisSystem = (() => {
     needsRefetch,
     getBodies,
     loadBodies,
+    getEphemerisWindowDays,
     warmBodiesInBackground,
 
     searchBodies,

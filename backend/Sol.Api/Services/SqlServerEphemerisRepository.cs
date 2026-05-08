@@ -236,12 +236,11 @@ ORDER BY SampleJd;";
     double startJd = JulianDateConverter.FromDateTime(DateTime.SpecifyKind(startUtc, DateTimeKind.Utc));
     double endJd   = JulianDateConverter.FromDateTime(DateTime.SpecifyKind(endUtc,   DateTimeKind.Utc));
 
-    // When hMax is null, return only authoritative bodies (Source != 'mpcorb').
-    // When hMax is provided, always include non-mpcorb bodies (planets etc. may have NULL H)
-    // plus mpcorb bodies brighter than hMax.
+    // Include bodies with NULL H_AbsMag (authoritative bodies: planets, moons, etc.)
+    // and bodies with H_AbsMag <= hMax. When hMax is null, restrict to authoritative kinds only.
     var hFilter = hMax.HasValue
-      ? "AND (b.Source != 'mpcorb' OR b.H_AbsMag <= @hMax)"
-      : "AND b.Source != 'mpcorb'";
+      ? "AND (b.H_AbsMag IS NULL OR b.H_AbsMag <= @hMax)"
+      : "AND b.Source != 'mpcorb' AND b.Kind IN ('star', 'planet', 'probe', 'moon', 'dwarf-planet', 'comet')";
 
     // step=1 returns every sample; step=N picks one sample per N days (ROW_NUMBER per body).
     var sql = step <= 1 ? $@"
@@ -254,8 +253,9 @@ WITH selectedBodies AS (
     {hFilter}
   ORDER BY
     CASE WHEN b.Source = 'mpcorb' THEN 1 ELSE 0 END,
-    b.SortOrder,
-    ISNULL(b.H_AbsMag, 9999),
+    COALESCE(b.SortOrder, 2147483647),
+    CASE WHEN b.H_AbsMag IS NULL THEN 0 ELSE 1 END,
+    ISNULL(b.H_AbsMag, 0),
     b.BodyId
 )
 SELECT e.BodyId, e.SampleJd,
@@ -275,8 +275,9 @@ WITH selectedBodies AS (
     {hFilter}
   ORDER BY
     CASE WHEN b.Source = 'mpcorb' THEN 1 ELSE 0 END,
-    b.SortOrder,
-    ISNULL(b.H_AbsMag, 9999),
+    COALESCE(b.SortOrder, 2147483647),
+    CASE WHEN b.H_AbsMag IS NULL THEN 0 ELSE 1 END,
+    ISNULL(b.H_AbsMag, 0),
     b.BodyId
 ),
 ranked AS (

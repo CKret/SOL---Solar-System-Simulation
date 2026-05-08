@@ -142,7 +142,8 @@ function getDwarfScenePositionAtTime(dwarf, timeYears, out = new THREE.Vector3()
 }
 
 function getMoonWorldPositionAtTime(moon, timeYears, out = new THREE.Vector3(), parentWorldPos = null) {
-  const M = (2 * Math.PI * timeYears / moon.md.period) + moon.angle0;
+  const moonPeriodYears = getMoonOrbitPeriodYears(moon);
+  const M = (2 * Math.PI * timeYears / moonPeriodYears) + moon.angle0;
   const E = keplerE(M, moon.md.ecc);
   const localX = moon.orbitSma * Math.cos(E) - moon.c;
   const localZ = -moon.b * Math.sin(E);
@@ -158,7 +159,8 @@ function getMoonWorldPositionAtTime(moon, timeYears, out = new THREE.Vector3(), 
 }
 
 function getMoonLocalPositionAtTime(moon, timeYears, out = new THREE.Vector3()) {
-  const M = (2 * Math.PI * timeYears / moon.md.period) + moon.angle0;
+  const moonPeriodYears = getMoonOrbitPeriodYears(moon);
+  const M = (2 * Math.PI * timeYears / moonPeriodYears) + moon.angle0;
   const E = keplerE(M, moon.md.ecc);
   const localX = moon.orbitSma * Math.cos(E) - moon.c;
   const localZ = -moon.b * Math.sin(E);
@@ -3584,6 +3586,8 @@ const objectCountLabel = document.getElementById('objects-count-label');
 const EPHEMERIS_H_STORAGE_KEY = 'sol.ephemeris.hAbsMagMax';
 let ephemerisHAbsMagMax = 12;
 let introPrefetchStarted = false;
+let targetedExtensionInFlight = null;
+const targetedBodyExtendedToSim = new Map();
 
 function clampEphemerisH(value) {
   const n = Number(value);
@@ -3610,19 +3614,34 @@ function syncEphemerisObjectCount() {
   objectCountValue.textContent = n.toLocaleString();
 }
 
-function fetchEphemerisWindow(startSim, endSim) {
-  return Promise.resolve(EphemerisSystem.fetchWindow(startSim, endSim, ephemerisHAbsMagMax))
-    .finally(() => {
-      syncEphemerisObjectCount();
-      markOrbitLinesDirty();
-    });
+async function fetchEphemerisWindow(startSim, endSim) {
+  try {
+    await Promise.resolve(EphemerisSystem.fetchWindow(startSim, endSim, ephemerisHAbsMagMax));
+
+    // Chain targeted extensions after baseline fetch, never before it.
+    const runTargeted = async () => {
+      const baseWindowDays = Math.max(1, Math.abs(endSim - startSim) * 365.25);
+      const ephBodies = EphemerisSystem.getBodies();
+      const bodiesNeedingExtended = identifyBodiesNeedingExtendedEphemeris(ephBodies, baseWindowDays);
+      await fetchExtendedEphemerisForBodies(bodiesNeedingExtended, startSim, endSim, baseWindowDays);
+    };
+
+    targetedExtensionInFlight = (targetedExtensionInFlight || Promise.resolve())
+      .then(runTargeted)
+      .catch((err) => {
+        console.warn('[Ephemeris] Targeted extension failed:', err?.message || err);
+      });
+    await targetedExtensionInFlight;
+  } finally {
+    syncEphemerisObjectCount();
+    markOrbitLinesDirty();
+  }
 }
 
 function startIntroEphemerisPrefetch() {
   if (introPrefetchStarted || !EphemerisSystem.isReady()) return;
-  if (EphemerisSystem.getMode() !== 'ephemeris') return;
   introPrefetchStarted = true;
-  fetchEphemerisWindow(simTime - 10, simTime + 10).catch(() => {});
+  return fetchEphemerisWindow(simTime - 10, simTime + 10).catch(() => {});
 }
 
 (() => {
@@ -4297,8 +4316,8 @@ function rotateFocusedView(dx, dy) {
       lookAtSun = false;
       btnLookAtSun.classList.remove('active');
     }
-    camTheta += dx * 0.005;
-    camPhi   += dy * 0.005;
+    camTheta -= dx * 0.005;
+    camPhi   -= dy * 0.005;
     targetPhi = camPhi;
   }
 }
@@ -4437,6 +4456,7 @@ const KM_PER_AU = 149597870.7;
 const SECONDS_PER_YEAR = 365.25 * 86400;
 const KM_S_PER_AU_PER_YEAR = KM_PER_AU / SECONDS_PER_YEAR;
 const SUN_GALACTIC_SPEED_KMS = 230;
+const TAU = Math.PI * 2;
 
 function formatSpeedKmS(speedKmS) {
   if (!Number.isFinite(speedKmS)) return '—';
@@ -4472,6 +4492,115 @@ function getInfoVelocity(type, obj) {
   return 'N/A';
 }
 
+function normalizeAngleRad(angle) {
+  let v = angle % TAU;
+  if (v < 0) v += TAU;
+  return v;
+}
+
+function formatEtaYears(years) {
+  if (!Number.isFinite(years) || years < 0) return '—';
+  const days = years * 365.25;
+  if (days < 1) return `${Math.max(1, Math.round(days * 24))} h`;
+  if (days < 120) return `${days.toFixed(1)} days`;
+  if (years < 1000) return `${years.toFixed(2)} yrs`;
+  return `${(years / 1000).toFixed(2)}k yrs`;
+}
+
+function formatOrbitDistance(value, unit) {
+  if (!Number.isFinite(value) || value <= 0) return '—';
+  if (unit === 'km') {
+    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M km`;
+    return `${Math.round(value).toLocaleString('en-US')} km`;
+  }
+  if (value >= 100) return `${value.toFixed(1)} AU`;
+  if (value >= 10) return `${value.toFixed(2)} AU`;
+  return `${value.toFixed(4)} AU`;
+}
+
+function getEtaToMeanAnomalyYears(currentM, targetM, periodYears) {
+  if (!Number.isFinite(periodYears) || periodYears <= 0) return null;
+  const now = normalizeAngleRad(currentM);
+  const target = normalizeAngleRad(targetM);
+  const delta = normalizeAngleRad(target - now);
+  return (delta / TAU) * periodYears;
+}
+
+function getOrbitExtremaInfo(type, obj) {
+  if (!obj) return null;
+
+  const AU_SCENE_FALLBACK = 32; // 1 AU in scene units; exported from voyager_trajectories.js
+  const au_scene = typeof AU_SCENE !== 'undefined' ? AU_SCENE : AU_SCENE_FALLBACK;
+
+  if (type === 'planet') {
+    const state = getPlanetOrbitState(obj, simTime);
+    const periodYears = Math.max(0.001, Math.abs(obj.d.period || 0));
+    const periAu = state.sma * (1 - state.ecc) / au_scene;
+    const aphAu = state.sma * (1 + state.ecc) / au_scene;
+    return {
+      peri: formatOrbitDistance(periAu, 'au'),
+      ap: formatOrbitDistance(aphAu, 'au'),
+      etaPeri: formatEtaYears(getEtaToMeanAnomalyYears(state.meanAnomaly, 0, periodYears)),
+      etaAp: formatEtaYears(getEtaToMeanAnomalyYears(state.meanAnomaly, Math.PI, periodYears)),
+    };
+  }
+
+  if (type === 'dwarf') {
+    const periodYears = Math.max(0.001, Math.abs(obj.d.period || 0));
+    const meanAnomaly = (TAU * simTime / periodYears) + obj.angle0;
+    const periAu = obj.d.sma * (1 - obj.d.ecc) / au_scene;
+    const aphAu = obj.d.sma * (1 + obj.d.ecc) / au_scene;
+    return {
+      peri: formatOrbitDistance(periAu, 'au'),
+      ap: formatOrbitDistance(aphAu, 'au'),
+      etaPeri: formatEtaYears(getEtaToMeanAnomalyYears(meanAnomaly, 0, periodYears)),
+      etaAp: formatEtaYears(getEtaToMeanAnomalyYears(meanAnomaly, Math.PI, periodYears)),
+    };
+  }
+
+  if (type === 'comet') {
+    const periodYears = Math.max(0.001, Math.abs(obj.orbitalPeriodYears || obj.cd?.period || 0));
+    const meanAnomaly = (TAU * simTime / periodYears) + obj.angle0;
+    const sma = Number(obj.cd?.sma);
+    const ecc = Number(obj.cd?.ecc);
+    if (!Number.isFinite(sma) || !Number.isFinite(ecc) || sma <= 0 || ecc < 0 || ecc >= 1) {
+      return { peri: '—', ap: '—', etaPeri: '—', etaAp: '—' };
+    }
+    const periAu = sma * (1 - ecc) / au_scene;
+    const aphAu = sma * (1 + ecc) / au_scene;
+    return {
+      peri: formatOrbitDistance(periAu, 'au'),
+      ap: formatOrbitDistance(aphAu, 'au'),
+      etaPeri: formatEtaYears(getEtaToMeanAnomalyYears(meanAnomaly, 0, periodYears)),
+      etaAp: formatEtaYears(getEtaToMeanAnomalyYears(meanAnomaly, Math.PI, periodYears)),
+    };
+  }
+
+  if (type === 'moon') {
+    const periodYears = getMoonOrbitPeriodYears(obj);
+    const meanAnomaly = (TAU * simTime / periodYears) + obj.angle0;
+    const aKm = MOON_SMA_KM[obj.md.name];
+    if (!Number.isFinite(aKm) || aKm <= 0) {
+      return {
+        peri: '—',
+        ap: '—',
+        etaPeri: formatEtaYears(getEtaToMeanAnomalyYears(meanAnomaly, 0, periodYears)),
+        etaAp: formatEtaYears(getEtaToMeanAnomalyYears(meanAnomaly, Math.PI, periodYears)),
+      };
+    }
+    const periKm = aKm * (1 - obj.md.ecc);
+    const aphKm = aKm * (1 + obj.md.ecc);
+    return {
+      peri: formatOrbitDistance(periKm, 'km'),
+      ap: formatOrbitDistance(aphKm, 'km'),
+      etaPeri: formatEtaYears(getEtaToMeanAnomalyYears(meanAnomaly, 0, periodYears)),
+      etaAp: formatEtaYears(getEtaToMeanAnomalyYears(meanAnomaly, Math.PI, periodYears)),
+    };
+  }
+
+  return null;
+}
+
 function syncInfoPanelVisibility() {
   const hasFocus = !!focusMesh;
   const showInfoPanel = hasFocus && !infoPanelDismissed;
@@ -4490,6 +4619,22 @@ function renderInfoContent(type, obj) {
     set('pi-lbl-diam', diam); set('pi-lbl-dist', dist);
     set('pi-lbl-year', year); set('pi-lbl-moons', moons); set('pi-lbl-vel', vel); set('pi-lbl-type', type_);
   };
+  const setOrbitMeta = (periLabel, periVal, etaPeriLabel, etaPeriVal, apLabel, apVal, etaApLabel, etaApVal) => {
+    set('pi-lbl-peri', periLabel); set('pi-peri', periVal);
+    set('pi-lbl-eta-peri', etaPeriLabel); set('pi-eta-peri', etaPeriVal);
+    set('pi-lbl-ap', apLabel); set('pi-ap', apVal);
+    set('pi-lbl-eta-ap', etaApLabel); set('pi-eta-ap', etaApVal);
+  };
+
+  const orbitInfo = getOrbitExtremaInfo(type, obj);
+  if (type === 'moon') {
+    setOrbitMeta('PERIAPSIS', orbitInfo?.peri ?? '—', 'ETA TO PERIAPSIS', orbitInfo?.etaPeri ?? '—', 'APOAPSIS', orbitInfo?.ap ?? '—', 'ETA TO APOAPSIS', orbitInfo?.etaAp ?? '—');
+  } else if (type === 'planet' || type === 'dwarf' || type === 'comet') {
+    setOrbitMeta('PERIHELION', orbitInfo?.peri ?? '—', 'ETA TO PERIHELION', orbitInfo?.etaPeri ?? '—', 'APHELION', orbitInfo?.ap ?? '—', 'ETA TO APHELION', orbitInfo?.etaAp ?? '—');
+  } else {
+    setOrbitMeta('PERIHELION', '—', 'ETA TO PERIHELION', '—', 'APHELION', '—', 'ETA TO APHELION', '—');
+  }
+
   if (type==='sun') {
     lbl('DIAMETER','DISTANCE','GALACTIC ORBIT','PLANETS','ORBITAL SPEED','TYPE');
     set('pi-name','THE SUN'); set('pi-diam','1,392,700 km'); set('pi-dist','—');
@@ -4500,9 +4645,10 @@ function renderInfoContent(type, obj) {
     set('pi-year',obj.d.year); set('pi-moons',obj.d.moons); set('pi-vel',getInfoVelocity(type, obj)); set('pi-type',obj.d.type);
   } else if (type==='moon') {
     lbl('DIAMETER','ORBITS','ORBITAL PERIOD','INCLINATION','ORBITAL SPEED','TYPE');
+    const moonPeriodDays = getMoonOrbitPeriodYears(obj) * 365.25;
     set('pi-name',obj.md.name); set('pi-diam',obj.md.diameter ?? '—');
     set('pi-dist',obj.md.planet);
-    set('pi-year',(obj.md.period*365.25).toFixed(2)+' days'); set('pi-moons',obj.md.inc.toFixed(1)+'°'); set('pi-vel',getInfoVelocity(type, obj));
+    set('pi-year',Number.isFinite(moonPeriodDays) ? (moonPeriodDays.toFixed(2) + ' days') : '—'); set('pi-moons',obj.md.inc.toFixed(1)+'°'); set('pi-vel',getInfoVelocity(type, obj));
     set('pi-type','Natural satellite');
   } else if (type==='dwarf') {
     lbl('DIAMETER','FROM SUN','ORBITAL PERIOD','MOONS','ORBITAL SPEED','TYPE');
@@ -5021,6 +5167,13 @@ function canUseBodyEphemeris(bodyId, periodYears, atSim = simTime) {
     && hasSufficientEphemerisCadence(bodyId, periodYears, atSim);
 }
 
+function getMoonOrbitPeriodYears(moon) {
+  const ephPeriod = Number(moon?.ephemerisPeriodYears);
+  if (Number.isFinite(ephPeriod) && ephPeriod > 0) return ephPeriod;
+  const authored = Number(moon?.md?.period);
+  return (Number.isFinite(authored) && authored > 0) ? authored : 0.01;
+}
+
 function markOrbitLinesDirty() {
   _lastOrbitLineMode = '';
   _lastOrbitLineSimTime = Number.NaN;
@@ -5031,7 +5184,7 @@ function isBodyUsingEphemerisNow(bodyLike, atSim = simTime) {
 
   if (bodyLike.md) {
     if (!USE_SATELLITE_EPHEMERIS) return false;
-    return canUseBodyEphemeris(bodyLike.ephemerisBodyId, bodyLike.md.period, atSim)
+    return canUseBodyEphemeris(bodyLike.ephemerisBodyId, getMoonOrbitPeriodYears(bodyLike), atSim)
       && canUseBodyEphemeris(bodyLike.parentPlanet?.ephemerisBodyId, bodyLike.parentPlanet?.d?.period, atSim);
   }
 
@@ -5059,16 +5212,45 @@ function setOrbitLineGeometryFromWorldPoints(line, points, exclusionRadius = SOL
 
 function setOrbitLineGeometryFromLocalPoints(line, points) {
   if (!line || !points || points.length < 2) return;
-  const nextGeo = new THREE.BufferGeometry().setFromPoints(points);
+  const validPts = points.filter(p => Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z));
+  if (validPts.length < 2) return;
+  const nextGeo = new THREE.BufferGeometry().setFromPoints(validPts);
+  nextGeo.computeBoundingSphere();
   line.geometry.dispose();
   line.geometry = nextGeo;
 }
 
-function getOrbitTimeRange(periodYears, mode) {
-  if (mode === 'ephemeris') {
-    const half = Math.max(0.08, Math.min(10, Math.abs(periodYears || 1) * 0.5));
-    return { start: simTime - half, end: simTime + half };
-  }
+function getEphemerisTimeBoundsForMoon(moon) {
+  const moonBodyId = moon?.ephemerisBodyId;
+  const parentBodyId = moon?.parentPlanet?.ephemerisBodyId;
+  if (!moonBodyId || !parentBodyId) return null;
+
+  // Get ephemeris bounds for the moon
+  const moonBody = EphemerisSystem.getBodyById(moonBodyId);
+  const parentBody = EphemerisSystem.getBodyById(parentBodyId);
+  if (!moonBody?.hasEphemeris || !parentBody?.hasEphemeris) return null;
+
+  // Both must have valid bounds
+  const moonMinJd = moonBody.ephemerisMinJD;
+  const moonMaxJd = moonBody.ephemerisMaxJD;
+  const parentMinJd = parentBody.ephemerisMinJD;
+  const parentMaxJd = parentBody.ephemerisMaxJD;
+  if (moonMinJd == null || moonMaxJd == null || parentMinJd == null || parentMaxJd == null) return null;
+
+  // Use the intersection of both ranges
+  const minJd = Math.max(moonMinJd, parentMinJd);
+  const maxJd = Math.min(moonMaxJd, parentMaxJd);
+  if (!(maxJd > minJd)) return null;
+
+  // Convert JD back to simTime (see ephemeris.js: simTimeToJd uses J2000_JD = 2451545.0)
+  const J2000_JD = 2451545.0;
+  const minSim = (minJd - J2000_JD) / 365.25;
+  const maxSim = (maxJd - J2000_JD) / 365.25;
+
+  return { minSim, maxSim };
+}
+
+function getOrbitTimeRange(periodYears, _mode) {
   const half = Math.max(0.08, Math.abs(periodYears || 1) * 0.5);
   return { start: simTime - half, end: simTime + half };
 }
@@ -5124,7 +5306,8 @@ function getMoonEphemerisLocalPosition(moon, atSim, out = new THREE.Vector3()) {
   const moonBodyId = moon.ephemerisBodyId;
   const parentBodyId = moon.parentPlanet.ephemerisBodyId;
   if (moonBodyId == null || parentBodyId == null) return null;
-  if (!canUseBodyEphemeris(moonBodyId, moon.md.period, atSim)) return null;
+  const moonPeriodYears = getMoonOrbitPeriodYears(moon);
+  if (!canUseBodyEphemeris(moonBodyId, moonPeriodYears, atSim)) return null;
   if (!canUseBodyEphemeris(parentBodyId, moon.parentPlanet.d.period, atSim)) return null;
 
   const moonPos = EphemerisSystem.getPosition(moonBodyId, atSim);
@@ -5134,20 +5317,26 @@ function getMoonEphemerisLocalPosition(moon, atSim, out = new THREE.Vector3()) {
   if (!Number.isFinite(moonPos.x) || !Number.isFinite(moonPos.y) || !Number.isFinite(moonPos.z)) return null;
   if (!Number.isFinite(parentPos.x) || !Number.isFinite(parentPos.y) || !Number.isFinite(parentPos.z)) return null;
 
-  // Convert world-frame relative vector into moonIncGrp local frame.
+  // EphemerisSystem positions are solarPivot-local (ecliptic J2000 flat, pre-tilt).
+  // Convert the relative vector to world space via solarPivot's rotation, then
+  // to moonIncGrp-local space via the inverse of its world rotation.
+  const dx = moonPos.x - parentPos.x;
+  const dy = moonPos.y - parentPos.y;
+  const dz = moonPos.z - parentPos.z;
+  const physicalDist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+  solarPivot.getWorldQuaternion(_moonBasisQ);
+  out.set(dx, dy, dz).applyQuaternion(_moonBasisQ);  // solarPivot-local → world
   moon.moonIncGrp.getWorldQuaternion(_moonBasisQ);
   _moonBasisInvQ.copy(_moonBasisQ).invert();
-  out.set(
-    moonPos.x - parentPos.x,
-    moonPos.y - parentPos.y,
-    moonPos.z - parentPos.z,
-  ).applyQuaternion(_moonBasisInvQ);
+  out.applyQuaternion(_moonBasisInvQ);                // world → moonIncGrp-local
 
   // In visual mode, preserve exaggerated moon orbit sizes while using ephemeris direction/phase.
+  // Use the actual physical distance rather than realOrbitSma, which may fall back to md.sma
+  // (a visual-scale parameter) for moons not in MOON_SMA_KM — giving a wrong scale factor.
   if (!realSizeMode) {
-    const realSma = moon.realOrbitSma;
-    if (Number.isFinite(realSma) && realSma > 1e-9) {
-      out.multiplyScalar(moon.visualOrbitSma / realSma);
+    if (physicalDist > 1e-9) {
+      out.multiplyScalar(moon.visualOrbitSma / physicalDist);
     }
   }
 
@@ -5158,23 +5347,69 @@ function getMoonEphemerisLocalPosition(moon, atSim, out = new THREE.Vector3()) {
 function sampleMoonRelativeEphemerisLocalPoints(moon, startSim, endSim, count = ORBIT_LINE_SAMPLES) {
   const points = [];
   const steps = Math.max(2, count);
+  const moonPeriodYears = getMoonOrbitPeriodYears(moon);
+
+  // Clamp the sampling range to the available ephemeris window to avoid fragmenting
+  // the orbit into disconnected arcs (ephemeris + Kepler fallback). For very long-period
+  // moons like Neso (28 years), the ±14yr sampling range may exceed the ephemeris bounds,
+  // causing getMoonEphemerisLocalPosition() to return null and trigger fallback.
+  let clampedStart = startSim;
+  let clampedEnd = endSim;
+  const ephBounds = getEphemerisTimeBoundsForMoon(moon);
+  if (ephBounds) {
+    clampedStart = Math.max(startSim, ephBounds.minSim);
+    clampedEnd = Math.min(endSim, ephBounds.maxSim);
+    if (!(clampedEnd > clampedStart)) {
+      // No valid overlap; can't sample this moon's ephemeris orbit
+      return null;
+    }
+  }
+
+  // Compute phase correction only if we're using any Kepler fallback
+  // (i.e., if the requested window exceeds the ephemeris bounds).
+  // Otherwise pure ephemeris is self-contained.
+  let cosPhi = 1, sinPhi = 0;
+  const needsFallback = (startSim < clampedStart) || (endSim > clampedEnd);
+  if (needsFallback) {
+    const _ephNow = getMoonEphemerisLocalPosition(moon, simTime, _moonRelWorld);
+    const ephNowX = _ephNow?.x ?? 0, ephNowZ = _ephNow?.z ?? 0;
+    if (_ephNow) {
+      const M0 = (2 * Math.PI * simTime / moonPeriodYears) + moon.angle0;
+      const E0 = keplerE(M0, moon.md.ecc);
+      const kx0 = moon.orbitSma * Math.cos(E0) - moon.c;
+      const kz0 = -moon.b * Math.sin(E0);
+      const rk = Math.hypot(kx0, kz0);
+      const re = Math.hypot(ephNowX, ephNowZ);
+      if (rk > 1e-9 && re > 1e-9) {
+        const cosK = kx0 / rk, sinK = kz0 / rk;
+        const cosE = ephNowX / re, sinE = ephNowZ / re;
+        cosPhi = cosE * cosK + sinE * sinK;
+        sinPhi = sinE * cosK - cosE * sinK;
+      }
+    }
+  }
+
   for (let i = 0; i < steps; i++) {
     const t = i / (steps - 1);
-    const atSim = startSim + (endSim - startSim) * t;
+    const atSim = clampedStart + (clampedEnd - clampedStart) * t;
 
+    // Try ephemeris first
     const relPoint = getMoonEphemerisLocalPosition(moon, atSim, _moonRelWorld);
     if (relPoint) {
       points.push(relPoint.clone());
       continue;
     }
 
-    // Per-point fallback keeps moon orbit lines aligned with live moon positions
-    // during sparse cache windows and in-flight ephemeris fetch updates.
-    const M = (2 * Math.PI * atSim / moon.md.period) + moon.angle0;
+    // Only fall back to Kepler if we actually need to (requested range exceeds bounds)
+    // and the sample is outside the ephemeris window. For pure ephemeris orbits,
+    // skip gaps entirely to avoid hybrid appearance.
+    if (!needsFallback) continue;
+
+    const M = (2 * Math.PI * atSim / moonPeriodYears) + moon.angle0;
     const E = keplerE(M, moon.md.ecc);
-    const localX = moon.orbitSma * Math.cos(E) - moon.c;
-    const localZ = -moon.b * Math.sin(E);
-    points.push(new THREE.Vector3(localX, 0, localZ));
+    const kx = moon.orbitSma * Math.cos(E) - moon.c;
+    const kz = -moon.b * Math.sin(E);
+    points.push(new THREE.Vector3(kx * cosPhi - kz * sinPhi, 0, kx * sinPhi + kz * cosPhi));
   }
 
   return points.length >= 2 ? points : null;
@@ -5380,9 +5615,24 @@ function refreshOrbitLines(mode) {
   // Moon orbit lines: use relative ephemeris tracks when available in ephemeris mode,
   // otherwise fall back to local Kepler geometry.
   for (const moon of moons) {
-    const moonPeriod = Math.max(0.001, Math.abs(moon.md.period || 0.01));
+    const moonPeriod = Math.max(0.001, Math.abs(getMoonOrbitPeriodYears(moon)));
     const moonEphemerisStable = USE_SATELLITE_EPHEMERIS;
-    const range = { start: simTime - moonPeriod * 0.5, end: simTime + moonPeriod * 0.5 };
+    
+    // For long-period moons, use the available ephemeris window instead of trying to
+    // fit ±0.5×period. This avoids excessive clamping that fragments the orbit.
+    let range = { start: simTime - moonPeriod * 0.5, end: simTime + moonPeriod * 0.5 };
+    if (mode === 'ephemeris' && moonEphemerisStable) {
+      const ephBounds = getEphemerisTimeBoundsForMoon(moon);
+      if (ephBounds) {
+        const requestedHalf = moonPeriod * 0.5;
+        const availableHalf = (ephBounds.maxSim - ephBounds.minSim) * 0.5;
+        // If the period is too long to fit in the available window, use the full window
+        if (requestedHalf > availableHalf) {
+          range = { start: ephBounds.minSim, end: ephBounds.maxSim };
+        }
+      }
+    }
+    
     const ephLocalPts = (mode === 'ephemeris' && moonEphemerisStable)
       ? sampleMoonRelativeEphemerisLocalPoints(moon, range.start, range.end)
       : null;
@@ -5544,7 +5794,7 @@ function animate(){
   }
   for(const m of moons){
     const moonEphemerisStable = USE_SATELLITE_EPHEMERIS;
-    const _moonEph = (moonEphemerisStable && canUseBodyEphemeris(m.ephemerisBodyId, m.md.period, simTime))
+    const _moonEph = (moonEphemerisStable && canUseBodyEphemeris(m.ephemerisBodyId, getMoonOrbitPeriodYears(m), simTime))
       ? EphemerisSystem.getPosition(m.ephemerisBodyId, simTime)
       : null;
     m.moonIncGrp.position.copy(m.parentPlanet.tiltGroup.position);
@@ -5731,6 +5981,80 @@ animate();
 // ── Ephemeris integration ─────────────────────────────────────────────────────
 // Derives object→BodyId mappings from the API body list — no hardcoded IDs.
 // Satellites are matched by parent BodyId + slug to avoid ambiguous slug-only matches.
+
+function identifyBodiesNeedingExtendedEphemeris(bodies, baseWindowDays) {
+  // Identify simulation-relevant authoritative bodies whose periods exceed
+  // the currently fetched global window.
+  const needsExtended = [];
+  const minBaseDays = Math.max(1, Number(baseWindowDays) || 0);
+  const PERIOD_WINDOW_MULTIPLIER = 1.02;
+  const SUPPORTED_KINDS = new Set(['planet', 'dwarf', 'moon', 'comet']);
+
+  for (const body of bodies) {
+    const kind = String(body?.kind || '').toLowerCase();
+    const isAuthoritative = body?.h_AbsMag == null;
+    if (!isAuthoritative || !SUPPORTED_KINDS.has(kind)) continue;
+    if (body?.hasEphemeris === false) continue;
+
+    const periodDays = Number(body.orbitalPeriod_days);
+    if (!(periodDays > 0)) continue;
+
+    if (periodDays > minBaseDays * PERIOD_WINDOW_MULTIPLIER) {
+      needsExtended.push({
+        id: body.id,
+        name: body.name,
+        slug: body.slug,
+        periodDays,
+        windowDays: minBaseDays,
+      });
+    }
+  }
+
+  if (needsExtended.length > 0) {
+    console.log(
+      `[Ephemeris] Identified ${needsExtended.length} authoritative bodies needing extended ephemeris.`
+    );
+  }
+
+  return needsExtended;
+}
+
+async function fetchExtendedEphemerisForBodies(bodiesNeedingExtended, baseStartSim, baseEndSim, baseWindowDays) {
+  // Targeted per-body fetch: forward-only extension from current window end.
+  if (!bodiesNeedingExtended || bodiesNeedingExtended.length === 0) return;
+
+  let completed = 0;
+  const total = bodiesNeedingExtended.length;
+  const TARGET_MIN_DAYS = 365;         // at least 1 year
+  const TARGET_MAX_DAYS = 36525;       // at most 100 years
+  const baseDays = Math.max(1, Number(baseWindowDays) || Math.abs(baseEndSim - baseStartSim) * 365.25);
+
+  for (const body of bodiesNeedingExtended) {
+    try {
+      const targetTotalDays = Math.max(TARGET_MIN_DAYS, Math.min(TARGET_MAX_DAYS, body.periodDays));
+      const extraDaysNeeded = Math.max(0, targetTotalDays - baseDays);
+      if (!(extraDaysNeeded > 0)) continue;
+
+      const desiredEndSim = baseEndSim + (extraDaysNeeded / 365.25);
+      const alreadyExtendedTo = targetedBodyExtendedToSim.get(body.id);
+      const fetchFromSim = Math.max(baseEndSim, Number.isFinite(alreadyExtendedTo) ? alreadyExtendedTo : baseEndSim);
+      if (fetchFromSim >= desiredEndSim) continue;
+
+      const extensionDays = (desiredEndSim - fetchFromSim) * 365.25;
+      const estimatedSamples = Math.min(5000, Math.max(32, Math.ceil(extensionDays) + 4));
+
+      console.log(`[Ephemeris] Targeted fetch ${completed + 1}/${total} for ${body.name}: +${extensionDays.toFixed(0)}d from ${fetchFromSim.toFixed(3)} to ${desiredEndSim.toFixed(3)} simYears`);
+      await EphemerisSystem.fetchBodyRange(body.id, fetchFromSim, desiredEndSim, estimatedSamples);
+      targetedBodyExtendedToSim.set(body.id, desiredEndSim);
+      completed++;
+    } catch (e) {
+      console.warn(`[Ephemeris] Failed to fetch extended data for ${body.name}:`, e.message);
+    }
+  }
+
+  console.log(`[Ephemeris] Targeted fetch complete: ${completed}/${total} long-period bodies extended.`);
+}
+
 function slugify(name) {
   return name.trim().toLowerCase()
     .replace(/'/g, '')
@@ -5746,8 +6070,9 @@ function slugify(name) {
 
   syncEphemerisObjectCount();  // bodies are now loaded — update the display count
 
-  // Begin staged ephemeris prefetch only when ephemeris mode is active.
-  startIntroEphemerisPrefetch();
+  // Baseline fetch happens first; targeted extension is chained by fetchEphemerisWindow().
+  // Don't await — let fetches happen in background; UI should be immediately responsive.
+  startIntroEphemerisPrefetch().catch(() => {});
 
   const cometSlugMap = {
     "Halley's": 'halley',
@@ -5821,7 +6146,15 @@ function slugify(name) {
       }
     }
     m.ephemerisBodyId = moonBody?.id ?? null;
+    m.ephemerisPeriodYears = null;
+    if (moonBody) {
+      const periodDays = Number(moonBody.orbitalPeriod_days);
+      if (Number.isFinite(periodDays) && periodDays > 0) {
+        m.ephemerisPeriodYears = periodDays / 365.25;
+      }
+    }
   }
+
   for (const c of comets) {
     c.ephemerisBodyId = EphemerisSystem.bodyIdForSlug(cometSlugMap[c.cd.name] || slugify(c.cd.name)) ?? null;
     const cometBody = c.ephemerisBodyId != null ? EphemerisSystem.getBodyById(c.ephemerisBodyId) : null;

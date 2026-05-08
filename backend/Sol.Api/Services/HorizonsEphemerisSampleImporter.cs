@@ -480,7 +480,7 @@ WHERE BodyId = @bodyId AND StartJd = @startJd AND EndJd = @endJd;";
 
   private async Task<int> CountIncompleteBodiesAsync(double? hMax, CancellationToken ct)
   {
-    var hFilter = hMax.HasValue ? "AND H_AbsMag <= @hMax" : "AND Source != 'mpcorb'";
+    var hFilter = hMax.HasValue ? "AND (H_AbsMag IS NULL OR H_AbsMag <= @hMax)" : "AND H_AbsMag IS NULL AND Source != 'mpcorb'";
     var sql = $@"
 SELECT COUNT(*) FROM dbo.Bodies
 WHERE IsActive = 1
@@ -499,8 +499,8 @@ WHERE IsActive = 1
   private async Task<int> ResetBodiesWithZeroChunksAsync(double? hMax, CancellationToken ct)
   {
     var hFilter = hMax.HasValue
-      ? "AND b.H_AbsMag <= @hMax"
-      : "AND b.Source != 'mpcorb'";
+      ? "AND (b.H_AbsMag IS NULL OR b.H_AbsMag <= @hMax)"
+      : "AND b.H_AbsMag IS NULL AND b.Source != 'mpcorb'";
     var sql = $@"
 UPDATE b SET CompletedEphemeris = 0, UpdatedUtc = SYSUTCDATETIME()
 FROM dbo.Bodies b
@@ -562,12 +562,11 @@ WHERE b.IsActive = 1
     await using var conn = _connectionFactory.CreateConnection();
     await conn.OpenAsync(ct);
 
-    // When hMax is null: import only authoritative bodies (Source != 'mpcorb').
-    // MPCORB bodies can have H_AbsMag IS NULL so filtering on H alone is not reliable.
-    // When hMax is provided: import all bodies with H <= hMax regardless of source.
+    // When hMax is null: import only authoritative bodies (H IS NULL, Source != 'mpcorb').
+    // When hMax is provided: all null-H bodies (any source) plus any body bright enough (H <= hMax).
     var hFilter = hMax.HasValue
-      ? "AND H_AbsMag <= @hMax"
-      : "AND Source != 'mpcorb'";
+      ? "AND (H_AbsMag IS NULL OR H_AbsMag <= @hMax)"
+      : "AND H_AbsMag IS NULL AND Source != 'mpcorb'";
     var sql = $@"
 SELECT BodyId, Slug, JplHorizonsId, EphemerisMinJD, EphemerisMaxJD
 FROM dbo.Bodies
@@ -667,18 +666,34 @@ WHEN NOT MATCHED THEN
   private static async Task<bool> IsRangeFullyLoggedAsync(
       SqlConnection conn, int bodyId, double minJd, double maxJd, TimeSpan step, CancellationToken ct)
   {
-    int expectedCount = ChunkRange(minJd, maxJd, step).Count();
+    var expectedChunks = ChunkRange(minJd, maxJd, step).ToList();
+    if (expectedChunks.Count == 0) return true;
 
+    // Load only successfully-imported chunks (SampleCount > 0).
+    // Duplicate entries and zero-sample entries must not inflate the count.
     const string sql = @"
-SELECT COUNT(*) FROM dbo.EphemerisImportLog
-WHERE BodyId = @bodyId AND StartJd >= @minJd AND EndJd <= @maxJd;";
+SELECT StartJd, EndJd FROM dbo.EphemerisImportLog
+WHERE BodyId = @bodyId AND StartJd >= @minJd AND EndJd <= @maxJd AND SampleCount > 0;";
 
     await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 0 };
     cmd.Parameters.AddWithValue("@bodyId", bodyId);
     cmd.Parameters.AddWithValue("@minJd",  minJd);
     cmd.Parameters.AddWithValue("@maxJd",  maxJd);
-    int loggedCount = Convert.ToInt32(await cmd.ExecuteScalarAsync(ct));
-    return loggedCount >= expectedCount;
+    await using var reader = await cmd.ExecuteReaderAsync(ct);
+
+    var logged = new List<(double Start, double End)>();
+    while (await reader.ReadAsync(ct))
+      logged.Add((reader.GetDouble(0), reader.GetDouble(1)));
+
+    // Each expected chunk must be covered by a log entry within ±2 JD on each boundary.
+    // This tolerates minor rounding differences from boundary-adjustment retries.
+    const double tol = 2.0;
+    foreach (var (s, e) in expectedChunks)
+    {
+      if (!logged.Any(l => Math.Abs(l.Start - s) <= tol && Math.Abs(l.End - e) <= tol))
+        return false;
+    }
+    return true;
   }
 
   private static async Task SetCompletedEphemerisAsync(
