@@ -267,7 +267,7 @@ For IIS hosting, publish the app and point the IIS site at the published output.
 
 ## Simulation Limits
 
-- This is not an ($N$)-body gravity integrator. Bodies are propagated independently from fixed orbital elements, so mutual perturbations, resonant drift, precession, and other long-timescale dynamical effects are not numerically integrated in real time.
+- This is not an $N$ -body gravity integrator. Bodies are propagated independently from fixed orbital elements, so mutual perturbations, resonant drift, precession, and other long-timescale dynamical effects are not numerically integrated in real time.
 - This project intentionally stays analytical for most solar-system bodies so it can remain explorable into the deep future and deep past; outside of historically sampled spacecraft such as Voyager, it does not attempt full ephemeris playback.
 - The bright-star model uses linear proper-motion extrapolation and is clamped to about $\pm10$ million years, which is a practical approximation rather than a full galactic-dynamics solution.
 - Voyager playback is only exact within the sampled Horizons interval included in the project; outside that range the code falls back to simple linear extrapolation from the final segment.
