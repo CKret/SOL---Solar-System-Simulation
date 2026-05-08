@@ -4,7 +4,7 @@ A browser-based 3D solar system and deep-time space visualizer built with Three.
 
 ## Run It
 
-The full experience requires the ephemeris backend: an ASP.NET Core API backed by a SQL Server `sol_ephemeris` database populated via the import commands described in [Ephemeris API](#ephemeris-api). With the backend running, **EPHEMERIS ON** uses JPL-sourced trajectory samples when cached data exists and cadence is sufficient for that body's orbital period, and falls back to anchored Kepler propagation otherwise. The **EPH OBJECTS** slider controls the absolute-magnitude threshold used to load real minor-planet positions from the database. The API base path is hardcoded to `/sol-api`, matching the production IIS layout.
+The full experience requires the ephemeris backend: an ASP.NET Core API backed by a SQL Server `sol_ephemeris` database populated via the import commands described in [Ephemeris API](#ephemeris-api). With the backend running, **EPHEMERIS ON** uses JPL-sourced trajectory samples when cached data exists and cadence is sufficient for that body's orbital period, and falls back to anchored Kepler propagation otherwise. The `SMALL BODIES H <= XX` slider controls the absolute-magnitude threshold used to load real minor-planet bodies from the database for the scene. The API base path is hardcoded to `/sol-api`, matching the production IIS layout.
 
 The frontend also runs without the backend. Serve the project root with any static file server:
 
@@ -12,7 +12,7 @@ The frontend also runs without the backend. Serve the project root with any stat
 python -m http.server 8000
 ```
 
-Open `http://localhost:8000/index.html`. Without the API the ephemeris system silently becomes a no-op: all bodies continue to move correctly using analytical Kepler orbits, but **EPHEMERIS ON** and **EPH OBJECTS** are inactive.
+Open `http://localhost:8000/index.html`. Without the API the ephemeris system silently becomes a no-op: all bodies continue to move correctly using analytical Kepler orbits, but **EPHEMERIS ON** and the `SMALL BODIES H <= XX` catalog-threshold control are inactive.
 
 Project layout (representative):
 
@@ -155,7 +155,7 @@ For IIS hosting, publish the app and point the IIS site at the published output.
 - 9 dwarf planets: Ceres, Pluto, Eris, Makemake, Haumea, Sedna, Gonggong, Quaoar, and Orcus.
 - 10 named comets: Halley's, Hale-Bopp, Hyakutake, Encke, 67P/Churyumov-Gerasimenko, Tempel 1, Wild 2, Shoemaker-Levy 9, NEOWISE, and Ikeya-Seki.
 - Both Voyager probes with trajectory data.
-- Database-backed minor-planet coverage from the 1.5M+ object MPCORB catalog, with **EPH OBJECTS** controlling the active absolute-magnitude threshold for ephemeris-driven asteroid/TNO rendering. A separate procedural Oort cloud remains as a distant background population.
+- Database-backed minor-planet coverage from the 1.5M+ object MPCORB catalog, with the `SMALL BODIES H <= XX` slider controlling the active absolute-magnitude threshold for loaded asteroid/TNO bodies across the scene. A separate procedural Oort cloud remains as a distant background population.
 
 ### Ephemeris mode
 - Toggle between **Kepler mode** (fast analytical orbits) and **Ephemeris mode** (high-precision positions from the pre-computed SQL Server database).
@@ -167,7 +167,7 @@ For IIS hosting, publish the app and point the IIS site at the published output.
 - Ephemeris coverage varies by body. Most objects have pre-computed samples spanning roughly **1600–2500 AD**; a few bodies have shorter or longer ranges depending on what JPL Horizons provides for that object.
 - Orbit lines update automatically whenever new cache data arrives, and are continuously pinned to the body's exact current position each frame so they never visibly drift.
 - Orbit-line color indicates what is currently in use: blue when a body is using ephemeris at the current time, grey when it is falling back to Kepler.
-- The **EPH OBJECTS** slider controls the absolute-magnitude threshold used to fetch minor-planet bodies from the database and render them as real-position point particles in the scene. Raising the threshold includes progressively dimmer and more numerous catalog objects; lowering it restricts the scene to brighter bodies. These particles render in Solar view and are intended for ephemeris-driven exploration.
+- The `SMALL BODIES H <= XX` slider controls the absolute-magnitude threshold used to load minor-planet bodies from the database. Raising the threshold includes progressively dimmer and more numerous catalog objects; lowering it restricts the scene to brighter bodies. Those loaded bodies remain part of the scene in both Kepler and Ephemeris mode, while their positions are rendered from cached ephemeris samples when available.
 
 ### Sky and time
 - Bright-star catalog with spectral coloring and proper motion.
@@ -184,7 +184,7 @@ For IIS hosting, publish the app and point the IIS site at the published output.
 ## Tracked Objects
 
 - Focusable tracked objects include the Sun, planets, moons, dwarf planets, named comets, and both Voyager probes.
-- In addition to curated tracked objects, the ephemeris backend can stream a much larger minor-planet set from the database (via **EPH OBJECTS**), while the distant Oort cloud remains a separate procedural background population.
+- In addition to curated tracked objects, the ephemeris backend can stream a much larger minor-planet set from the database via the `SMALL BODIES H <= XX` threshold control, while the distant Oort cloud remains a separate procedural background population.
 
 ### Views and navigation
 - `SOLAR SYSTEM` view for the standard orbital layout.
@@ -200,7 +200,7 @@ For IIS hosting, publish the app and point the IIS site at the published output.
 - Built-in help overlay and keyboard shortcut guide, opened from the bottom-left help button.
 - Toggle buttons for realtime, real-size rendering, trails, orbits, constellations, look-at-Sun mode, and geo lock.
 - **KEPLER MODE / EPHEMERIS ON** toggle switches between analytical orbits and database-backed high-precision positions.
-- **EPH OBJECTS** slider (`H = 0–25`) sets the absolute-magnitude threshold for minor-planet positions fetched and rendered in Ephemeris mode.
+- `SMALL BODIES H <= XX` slider (`H = 0–25`) sets the absolute-magnitude threshold for minor-planet bodies loaded into the scene in both Kepler and Ephemeris mode.
 - Orion shortcut button (`HUNTER / ORION`) for quick sky focus.
 - Responsive mobile UI with a bottom dock and dedicated Search, Objects, Time, and Controls sheets.
 - Touch-safe mobile search, panel management, and object info behavior.

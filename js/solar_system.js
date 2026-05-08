@@ -3604,7 +3604,7 @@ function syncEphemerisFilterUi(hValue) {
   if (!objectCountSlider) return;
   const h = clampEphemerisH(hValue);
   objectCountSlider.value = String(h);
-  if (objectCountLabel) objectCountLabel.textContent = `EPH H <= ${h}`;
+  if (objectCountLabel) objectCountLabel.textContent = `SMALL BODIES H <= ${h}`;
 }
 
 function syncEphemerisObjectCount() {
@@ -5418,10 +5418,11 @@ function sampleMoonRelativeEphemerisLocalPoints(moon, startSim, endSim, count = 
 function sampleMoonRelativeKeplerLocalPoints(moon, startSim, endSim, count = ORBIT_LINE_SAMPLES) {
   const points = [];
   const steps = Math.max(2, count);
+  const moonPeriodYears = getMoonOrbitPeriodYears(moon);
   for (let i = 0; i < steps; i++) {
     const t = i / (steps - 1);
     const atSim = startSim + (endSim - startSim) * t;
-    const M = (2 * Math.PI * atSim / moon.md.period) + moon.angle0;
+    const M = (2 * Math.PI * atSim / moonPeriodYears) + moon.angle0;
     const E = keplerE(M, moon.md.ecc);
     const localX = moon.orbitSma * Math.cos(E) - moon.c;
     const localZ = -moon.b * Math.sin(E);

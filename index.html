@@ -620,13 +620,14 @@ body.intro-active #mobile-backdrop {
   flex-direction:column;
   align-items:stretch;
   gap:5px;
-  width:140px;
+  width:176px;
 }
 #objects-count-label {
   font-size:10px;
-  letter-spacing:2px;
+  letter-spacing:1.5px;
   color:rgba(255,255,255,0.22);
   text-align:right;
+  white-space:nowrap;
 }
 #objects-count-row {
   display:flex;
@@ -1623,10 +1624,10 @@ body:not(.mobile-ui) #focus-bar {
   </label>
   <button class="sbtn" id="ephemeris-btn" title="E" style="border-color:rgba(80,200,255,0.4)">KEPLER MODE</button>
   <label id="objects-count-wrap" for="objects-count-slider">
-    <span id="objects-count-label">EPH H &lt;= 12</span>
+    <span id="objects-count-label">SMALL BODIES H &lt;= 12</span>
     <div id="objects-count-row">
       <span id="objects-count-value">0</span>
-      <input type="range" id="objects-count-slider" min="0" max="25" step="1" value="12" aria-label="Ephemeris absolute magnitude threshold">
+      <input type="range" id="objects-count-slider" min="0" max="25" step="1" value="12" aria-label="Small bodies absolute magnitude threshold">
     </div>
   </label>
   <button class="sbtn" id="real-size-btn" title="S">REAL SIZE</button>
