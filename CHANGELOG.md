@@ -5,6 +5,7 @@ This changelog is derived from the project's git commit messages and is listed n
 ## 2026-05-08
 
 ### Fixed
+- `c681108` Ephemeris importer now handles overlapping imports gracefully: PK violations (SQL error 2627) are caught and the chunk is marked as complete, preventing infinite retry loops when resuming partial runs or re-running the same H-range.
 - `4b9f6bc` Ephemeris sample importer no longer fails on startup when `sol_user` lacks `VIEW DEFINITION`: removed `EnsureEphemerisMergeIndexAsync` which used `OBJECT_ID()` (returns `NULL` without that permission), causing `CREATE INDEX` to run unconditionally and error.
 - `4b9f6bc` Added missing `IX_EphemerisSamples_BodyId_SampleJd` index to `001_initial_schema.sql` where it belongs.
 - `4b9f6bc` Reduced `import-samples` JPL Horizons concurrency from 5 to 2 and added a 1 s delay between chunk fetches to avoid rate limiting.
