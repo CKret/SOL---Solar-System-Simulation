@@ -83,8 +83,16 @@ const EphemerisSystem = (() => {
   function jdToIso(jd) {
     // Only valid for AD dates representable by Date (post-100 AD or so).
     // For BC dates the import runs but the frontend only uses AD sim-time ranges.
+    // Date has limits: roughly -271821 to +275760 years.
+    // For extreme JD values outside these bounds, return null to signal caller to skip fetch.
     const ms = (jd - UNIX_JD) * 86400000;
-    return new Date(ms).toISOString().slice(0, 19) + 'Z';
+    const date = new Date(ms);
+    const isoStr = date.toISOString();
+    // Check if the date is valid (toISOString on invalid Date produces error or garbage)
+    if (isoStr === 'Invalid Date' || !isoStr || !isoStr.match(/^\d{4}-\d{2}-\d{2}/)) {
+      return null;  // Out of representable range
+    }
+    return isoStr.slice(0, 19) + 'Z';
   }
 
   // ── Coordinate conversion ─────────────────────────────────────────────────────
@@ -363,15 +371,23 @@ const EphemerisSystem = (() => {
   // using the best data already available while broader windows stream in.
   async function _doFetch(centerSimTime, radiusYears, hMax, step, stageLabel, requestId) {
     const centerJd = simTimeToJd(centerSimTime);
+    const centerUtc = jdToIso(centerJd);
+    
+    // Skip fetch if the requested time is outside representable date range
+    if (centerUtc == null) {
+      console.warn(`[Ephemeris] Skipping ${stageLabel}: time ${centerSimTime.toFixed(1)} years is outside representable range for API.`);
+      return;
+    }
+    
     const radiusDays = Math.max(0.5, radiusYears * 365.25);
     const startJd = centerJd - radiusDays;
     const endJd = centerJd + radiusDays;
     const hParam  = hMax != null ? `&h_max=${hMax}` : '';
     const maxBodies = getRequestedMaxBodies(hMax, stageLabel);
     const maxBodiesParam = Number.isFinite(maxBodies) ? `&maxBodies=${maxBodies}` : '';
-    const url = `/api/ephemeris/window?centerUtc=${encodeURIComponent(jdToIso(centerJd))}&radiusDays=${radiusDays}&step=${step}${hParam}${maxBodiesParam}`;
+    const url = `/api/ephemeris/window?centerUtc=${encodeURIComponent(centerUtc)}&radiusDays=${radiusDays}&step=${step}${hParam}${maxBodiesParam}`;
 
-    console.log(`[Ephemeris] Fetching ${stageLabel} (step=${step}) centered ${jdToIso(centerJd)} radius ${radiusDays.toFixed(1)}d`);
+    console.log(`[Ephemeris] Fetching ${stageLabel} (step=${step}) centered ${centerUtc} radius ${radiusDays.toFixed(1)}d`);
     if (_activeFetchController) _activeFetchController.abort();
     const controller = new AbortController();
     _activeFetchController = controller;
@@ -445,8 +461,16 @@ const EphemerisSystem = (() => {
   async function fetchAnchor(anchorSimTime, keplerPosFn) {
     _keplerPositionProvider = keplerPosFn;
     const anchorJd = simTimeToJd(anchorSimTime);
+    const anchorUtc = jdToIso(anchorJd);
+    
+    // Skip anchor fetch if time is outside representable date range (use pure Kepler instead)
+    if (anchorUtc == null) {
+      console.warn(`[Ephemeris] Skipping anchor fetch: time ${anchorSimTime.toFixed(1)} years is outside representable range.`);
+      return;
+    }
+    
     // Fetch a 2-day date-centered all-bodies window and interpolate to exact anchor JD
-    const url = `/api/ephemeris/window?centerUtc=${encodeURIComponent(jdToIso(anchorJd))}&radiusDays=1&step=1`;
+    const url = `/api/ephemeris/window?centerUtc=${encodeURIComponent(anchorUtc)}&radiusDays=1&step=1`;
 
     try {
       const data = await apiFetch(url);
@@ -729,6 +753,13 @@ const EphemerisSystem = (() => {
 
     const startUtc = jdToIso(startJd);
     const endUtc = jdToIso(endJd);
+    
+    // Skip fetch if either boundary date is outside representable range
+    if (startUtc == null || endUtc == null) {
+      console.warn(`[Ephemeris] Skipping fetchBodyRange for body ${bodyId}: time range ${startSimTime.toFixed(1)}–${endSimTime.toFixed(1)} years is outside representable range.`);
+      return false;
+    }
+    
     const safeLimit = Number.isFinite(limit) ? Math.max(2, Math.floor(limit)) : null;
     const limitParam = safeLimit != null ? `&limit=${safeLimit}` : '';
     const bodyUrl = `/api/ephemeris/${bodyId}?startUtc=${encodeURIComponent(startUtc)}&endUtc=${encodeURIComponent(endUtc)}${limitParam}`;

@@ -33,14 +33,14 @@ public sealed partial class HorizonsEphemerisSampleImporter(
       ? JulianDateConverter.FromDateTime(DateTime.SpecifyKind(endUtc.Value, DateTimeKind.Utc))   : null;
 
     var bodies = await LoadBodiesForEphemerisAsync(hMax, cancellationToken);
-    Console.WriteLine($"Importing ephemeris for {bodies.Count:N0} bodies (hMax={hMax?.ToString() ?? "none"}, parallelism=2).");
+    Console.WriteLine($"Importing ephemeris for {bodies.Count:N0} bodies (hMax={hMax?.ToString() ?? "none"}, parallelism=5).");
 
     int totalBodies = 0, totalSamples = 0, completed = 0;
     var step = sampleRateOverride ?? TimeSpan.FromDays(1);
 
     await Parallel.ForEachAsync(
       bodies,
-      new ParallelOptions { MaxDegreeOfParallelism = 2, CancellationToken = cancellationToken },
+      new ParallelOptions { MaxDegreeOfParallelism = 5, CancellationToken = cancellationToken },
       async ((int BodyId, string Slug, string JplId, double MinJd, double MaxJd) body, CancellationToken ct) =>
       {
         var (bodyId, slug, jplId, minJd, maxJd) = body;
