@@ -159,7 +159,8 @@ For IIS hosting, publish the app and point the IIS site at the published output.
 
 ### Ephemeris mode
 - Toggle between **Kepler mode** (fast analytical orbits) and **Ephemeris mode** (high-precision positions from the pre-computed SQL Server database).
-- In Ephemeris mode the frontend uses a progressive 4-stage fetch: ±1 day → ±1 month → ±1 year → ±10 years, so present-day positions are available almost immediately and longer-range cache builds in the background.
+- In Ephemeris mode the frontend switches immediately and uses a progressive 4-stage fetch: ±1 day → ±1 month → ±1 year → ±10 years, so present-day positions are available almost immediately and longer-range cache builds in the background without blocking the toggle.
+- After the baseline window is cached, the frontend can request targeted forward-only extensions for long-period authoritative bodies whose orbital periods exceed the current cached window. This keeps bodies such as distant irregular moons and long-period comets from dropping back to coarse analytical orbit lines unnecessarily.
 - During the intro, body metadata now warms incrementally: the initial load starts with authoritative bodies plus objects up to `H <= 12`, then background requests expand one H band at a time through `H <= 25` via `/api/bodies/batch` so the searchable/renderable catalog grows without re-fetching already cached bodies.
 - Cached ephemeris positions are evaluated with Hermite interpolation (position + velocity), then mapped into scene coordinates.
 - Runtime selection is uniform across periodic bodies: use ephemeris where cached cadence is sufficient for the body's orbital period; otherwise fall back to Kepler (with anchors where available).
@@ -190,6 +191,7 @@ For IIS hosting, publish the app and point the IIS site at the published output.
 - `VORTEX` view for the solar system's helical galactic motion.
 - Desktop object selection is available from the right-side `OBJECT` dropdown, while mobile retains a dedicated Objects sheet.
 - Click-to-focus object inspection with an info panel that can be temporarily hidden without clearing focus.
+- The info panel includes perihelion/aphelion data for heliocentric bodies, periapsis/apoapsis data for moons, and ETA readouts for the next extrema passage when that orbit model is available.
 - Search box with keyboard navigation for fast lookup of objects and constellations.
 
 ### UI and presentation
@@ -208,7 +210,7 @@ For IIS hosting, publish the app and point the IIS site at the published output.
 ## Controls
 
 ### Mouse
-- Left drag: orbit the focused object or current view.
+- Left drag: orbit the focused object or current view. In unfocused free view, both drag axes are inverted.
 - Right drag: roll focused view, or pan when no object is focused.
 - Scroll: zoom in and out.
 - Click: focus an object and open its info panel.
@@ -252,6 +254,7 @@ For IIS hosting, publish the app and point the IIS site at the published output.
 - Moon orientation uses explicit per-moon spin handling. Regular moons default to synchronous parent-facing rotation, Earth's Moon keeps its tuned tidal-lock presentation offsets, several irregular moons use measured sidereal spin periods, and Hyperion is treated as a chaotic rotator rather than a locked body. The Moon's current orbital phase is also calibrated to a known new-moon epoch so realtime illumination is more plausible, while still remaining an analytical approximation rather than a full lunar ephemeris.
 - Voyager 1 and 2 do not use Keplerian approximations here. Their positions come from sampled JPL Horizons trajectory data in the Solar System Barycenter / Ecliptic J2000 frame and are played back with binary search plus linear interpolation between samples.
 - In Ephemeris mode, positions come from pre-computed state vectors fetched from the JPL Horizons API and stored in SQL Server as `(x, y, z, vx, vy, vz)` tuples in the Solar System Barycenter / Ecliptic J2000 frame. At runtime the backend converts these to heliocentric coordinates before returning them to the frontend. The frontend then locates the two bracketing samples for the requested simulation time and applies **Hermite cubic interpolation** using both position and velocity at each endpoint, giving a smooth $C^1$-continuous position curve that respects the body's true velocity rather than just linearly blending positions. Each periodic body is then cadence-checked against its local cached sample spacing; if the available ephemeris spacing is too coarse for that body's period, runtime falls back to Kepler for that body until sufficient data is available. Where a body's ephemeris coverage begins or ends, an anchor correction is computed from the difference between the last known ephemeris position and the Kepler orbit at that boundary, and that offset is smoothly applied to the Kepler positions outside the covered range so the body does not jump when transitioning between modes. Orbit lines in ephemeris mode are sampled from this same interpolated trajectory over a symmetric window centered on the current simulation time, and the midpoint vertex is pinned to the body's exact current position every frame to eliminate visible drift between full line refreshes.
+- For long-period moons in ephemeris mode, the rendered local orbit track may appear as an open arc or spiral rather than a closed ellipse. That is expected: the moon is sampled relative to a parent body that is itself moving heliocentrically during the finite ephemeris window, so the start and end of the sampled track do not generally land on the same point in space.
 
 ## Data Sources
 

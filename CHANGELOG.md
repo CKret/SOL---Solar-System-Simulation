@@ -2,6 +2,23 @@
 
 This changelog is derived from the project's git commit messages and is listed newest first.
 
+## 2026-05-09
+
+### Added
+- `22329a5` Added orbit-extrema details to the object info panel: perihelion/aphelion plus ETA for heliocentric bodies, and periapsis/apoapsis plus ETA for moons.
+- `22329a5` Added targeted per-body ephemeris range fetching so long-period authoritative bodies can extend beyond the baseline cached window without expanding the global fetch for the full catalog.
+
+### Changed
+- `22329a5` Ephemeris mode now switches on immediately while the progressive cache warm-up and any long-period targeted extensions continue in the background.
+- `22329a5` Free-view left-drag is now inverted on both axes when no object is focused.
+- `22329a5` The info panel now scrolls to accommodate the added orbit-extrema rows, and the redundant in-panel `ESC clear focus` hint was removed.
+
+### Fixed
+- `22329a5` Fixed long-period moon orbit rendering by deriving moon periods from ephemeris-aware metadata, sampling against the full valid moon/parent overlap window, and avoiding the malformed hybrid orbit artifacts that affected bodies such as Neso.
+- `22329a5` Fixed moon ephemeris local-position scaling so visual-size mode preserves the sampled parent-relative direction and distance correctly instead of distorting some irregular moon tracks.
+- `22329a5` Fixed authoritative-body SQL filtering and ordering in the ephemeris backend so NULL-`H_AbsMag` curated bodies are included consistently and prioritized correctly ahead of H-filtered MPCORB results.
+- `22329a5` Fixed ephemeris import completion detection so only successful logged chunks count toward completion, using chunk-range matching instead of a raw row count.
+
 ## 2026-05-08
 
 ### Fixed
