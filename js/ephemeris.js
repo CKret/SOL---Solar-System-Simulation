@@ -37,6 +37,9 @@ const EphemerisSystem = (() => {
   // How many days on each side of the target window to keep in the sample cache.
   // Samples outside this band are pruned when a new fetch begins.
   const CACHE_KEEP_MARGIN_DAYS = 365;
+  // Ephemeris data range: BC 9999 to AD 9999 (in simTime years from J2000)
+  const EPHEMERIS_MIN_SIMTIME_YEARS = -12000;  // approx BC 9999
+  const EPHEMERIS_MAX_SIMTIME_YEARS = 12000;   // approx AD 9999
   // ── State ────────────────────────────────────────────────────────────────────
   let _apiBase  = 'http://localhost:5235';
   let _mode     = 'kepler';    // 'kepler' | 'ephemeris'
@@ -80,19 +83,16 @@ const EphemerisSystem = (() => {
     return (jd - J2000_JD) / 365.25;
   }
 
+  function isWithinEphemerisRange(simTimeYears) {
+    return simTimeYears >= EPHEMERIS_MIN_SIMTIME_YEARS && simTimeYears <= EPHEMERIS_MAX_SIMTIME_YEARS;
+  }
+
   function jdToIso(jd) {
     // Only valid for AD dates representable by Date (post-100 AD or so).
     // For BC dates the import runs but the frontend only uses AD sim-time ranges.
-    // Date has limits: roughly -271821 to +275760 years.
-    // For extreme JD values outside these bounds, return null to signal caller to skip fetch.
+    // Caller must verify time is within EPHEMERIS_MIN_SIMTIME_YEARS–EPHEMERIS_MAX_SIMTIME_YEARS.
     const ms = (jd - UNIX_JD) * 86400000;
-    const date = new Date(ms);
-    const isoStr = date.toISOString();
-    // Check if the date is valid (toISOString on invalid Date produces error or garbage)
-    if (isoStr === 'Invalid Date' || !isoStr || !isoStr.match(/^\d{4}-\d{2}-\d{2}/)) {
-      return null;  // Out of representable range
-    }
-    return isoStr.slice(0, 19) + 'Z';
+    return new Date(ms).toISOString().slice(0, 19) + 'Z';
   }
 
   // ── Coordinate conversion ─────────────────────────────────────────────────────
@@ -370,15 +370,14 @@ const EphemerisSystem = (() => {
   // Fetches one window and merges it into the existing cache so the renderer keeps
   // using the best data already available while broader windows stream in.
   async function _doFetch(centerSimTime, radiusYears, hMax, step, stageLabel, requestId) {
-    const centerJd = simTimeToJd(centerSimTime);
-    const centerUtc = jdToIso(centerJd);
-    
-    // Skip fetch if the requested time is outside representable date range
-    if (centerUtc == null) {
-      console.warn(`[Ephemeris] Skipping ${stageLabel}: time ${centerSimTime.toFixed(1)} years is outside representable range for API.`);
+    // Skip fetch if the requested time is outside the known ephemeris range
+    if (!isWithinEphemerisRange(centerSimTime)) {
+      console.warn(`[Ephemeris] Skipping ${stageLabel}: time ${centerSimTime.toFixed(1)} years is outside ephemeris range (BC 9999–AD 9999).`);
       return;
     }
     
+    const centerJd = simTimeToJd(centerSimTime);
+    const centerUtc = jdToIso(centerJd);
     const radiusDays = Math.max(0.5, radiusYears * 365.25);
     const startJd = centerJd - radiusDays;
     const endJd = centerJd + radiusDays;
@@ -460,14 +459,15 @@ const EphemerisSystem = (() => {
   // at the same simTime so the correction offset can be computed.
   async function fetchAnchor(anchorSimTime, keplerPosFn) {
     _keplerPositionProvider = keplerPosFn;
-    const anchorJd = simTimeToJd(anchorSimTime);
-    const anchorUtc = jdToIso(anchorJd);
     
-    // Skip anchor fetch if time is outside representable date range (use pure Kepler instead)
-    if (anchorUtc == null) {
-      console.warn(`[Ephemeris] Skipping anchor fetch: time ${anchorSimTime.toFixed(1)} years is outside representable range.`);
+    // Skip anchor fetch if time is outside known ephemeris range (use pure Kepler)
+    if (!isWithinEphemerisRange(anchorSimTime)) {
+      console.warn(`[Ephemeris] Skipping anchor fetch: time ${anchorSimTime.toFixed(1)} years is outside ephemeris range (BC 9999–AD 9999).`);
       return;
     }
+    
+    const anchorJd = simTimeToJd(anchorSimTime);
+    const anchorUtc = jdToIso(anchorJd);
     
     // Fetch a 2-day date-centered all-bodies window and interpolate to exact anchor JD
     const url = `/api/ephemeris/window?centerUtc=${encodeURIComponent(anchorUtc)}&radiusDays=1&step=1`;
@@ -743,6 +743,12 @@ const EphemerisSystem = (() => {
   async function fetchBodyRange(bodyId, startSimTime, endSimTime, limit = null) {
     if (bodyId == null) return false;
 
+    // Skip fetch if the requested time range is outside ephemeris bounds
+    if (!isWithinEphemerisRange(startSimTime) || !isWithinEphemerisRange(endSimTime)) {
+      console.warn(`[Ephemeris] Skipping fetchBodyRange for body ${bodyId}: time range ${startSimTime.toFixed(1)}–${endSimTime.toFixed(1)} years is outside ephemeris range (BC 9999–AD 9999).`);
+      return false;
+    }
+
     let startJd = simTimeToJd(startSimTime);
     let endJd = simTimeToJd(endSimTime);
     if (endJd < startJd) {
@@ -753,13 +759,6 @@ const EphemerisSystem = (() => {
 
     const startUtc = jdToIso(startJd);
     const endUtc = jdToIso(endJd);
-    
-    // Skip fetch if either boundary date is outside representable range
-    if (startUtc == null || endUtc == null) {
-      console.warn(`[Ephemeris] Skipping fetchBodyRange for body ${bodyId}: time range ${startSimTime.toFixed(1)}–${endSimTime.toFixed(1)} years is outside representable range.`);
-      return false;
-    }
-    
     const safeLimit = Number.isFinite(limit) ? Math.max(2, Math.floor(limit)) : null;
     const limitParam = safeLimit != null ? `&limit=${safeLimit}` : '';
     const bodyUrl = `/api/ephemeris/${bodyId}?startUtc=${encodeURIComponent(startUtc)}&endUtc=${encodeURIComponent(endUtc)}${limitParam}`;
