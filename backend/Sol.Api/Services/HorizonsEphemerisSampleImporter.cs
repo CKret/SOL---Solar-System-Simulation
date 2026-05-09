@@ -112,6 +112,7 @@ public sealed partial class HorizonsEphemerisSampleImporter(
   // EXISTS), and writes a log entry regardless of whether data was returned.
   // HTTP errors are not logged so they are retried on the next run.
   private const int BoundaryMaxShrinkDays = 10;
+  private const double ChunkMatchToleranceJd = 2.0;
 
   private async Task<int> ImportBodyChunksAsync(
       SqlConnection conn,
@@ -128,7 +129,7 @@ public sealed partial class HorizonsEphemerisSampleImporter(
 
     foreach (var (winStart, winEnd) in allChunks) {
       chunkIndex++;
-      if (loggedChunks.Contains((winStart, winEnd))) continue;
+      if (IsChunkLogged(loggedChunks, winStart, winEnd)) continue;
 
       Console.WriteLine($"    {slug} {chunkIndex}/{totalChunks} JD{winStart:F0}..JD{winEnd:F0}");
       await Task.Delay(1000, ct); // avoid JPL Horizons rate limiting
@@ -188,6 +189,20 @@ public sealed partial class HorizonsEphemerisSampleImporter(
     }
 
     return totalInserted;
+  }
+
+  private static bool IsChunkLogged(
+      IReadOnlyCollection<(double Start, double End)> loggedChunks,
+      double startJd,
+      double endJd)
+  {
+    foreach (var (loggedStart, loggedEnd) in loggedChunks)
+    {
+      if (Math.Abs(loggedStart - startJd) <= ChunkMatchToleranceJd &&
+          Math.Abs(loggedEnd - endJd) <= ChunkMatchToleranceJd)
+        return true;
+    }
+    return false;
   }
 
   private async Task<ChunkFetchResult> FetchAndInsertChunkAsync(
@@ -588,7 +603,7 @@ ORDER BY H_AbsMag ASC, Slug;";
     return list;
   }
 
-  private static async Task<HashSet<(double, double)>> LoadLoggedChunksAsync(
+  private static async Task<List<(double Start, double End)>> LoadLoggedChunksAsync(
       SqlConnection conn, int bodyId, double startJd, double endJd, CancellationToken ct)
   {
     // Only chunks with SampleCount > 0 are treated as done.
@@ -603,7 +618,7 @@ WHERE BodyId = @bodyId AND StartJd >= @startJd AND EndJd <= @endJd AND SampleCou
     cmd.Parameters.AddWithValue("@endJd",   endJd);
     await using var reader = await cmd.ExecuteReaderAsync(ct);
 
-    var result = new HashSet<(double, double)>();
+    var result = new List<(double Start, double End)>();
     while (await reader.ReadAsync(ct))
       result.Add((reader.GetDouble(0), reader.GetDouble(1)));
     return result;
