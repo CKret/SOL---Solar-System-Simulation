@@ -5,6 +5,13 @@ This changelog is derived from the project's git commit messages and is listed n
 ## 2026-05-09
 
 ### Fixed
+- `86cba79` Fixed ephemeris importer re-downloading already-imported chunks: replaced exact floating-point chunk-key matching with a tolerance-based comparison (±2 JD) so minor boundary differences no longer cause redundant Horizons fetches and no-op inserts.
+- `a207c1b` Fixed rendering blackout at extreme simulation times (e.g. 183,469 BC / 208,676 AD): malformed ISO UTC strings from JavaScript `Date` overflow were being sent as `centerUtc` to the API, causing HTTP 400 errors that prevented Kepler fallback from activating.
+- `e93de14` Replaced `Date` overflow detection with an explicit ephemeris range guard (BC 9999–AD 9999): fetch functions now skip API calls cleanly for out-of-range times and fall back to pure Kepler propagation, with no wasted network attempts.
+
+## 2026-05-09 (earlier)
+
+### Fixed
 - `6f3f1e3` Fixed Kepler orbit line behavior so the line geometry stays aligned with the current moon period source instead of jumping in Kepler mode.
 
 ### Changed
