@@ -1,277 +1,161 @@
 using Microsoft.Data.SqlClient;
+using Microsoft.EntityFrameworkCore;
+using Sol.Api.Data;
+using Sol.Api.Data.Entities;
 using Sol.Api.Models;
-using System.Data;
-using System.Text;
 
 namespace Sol.Api.Services;
 
-public sealed class SqlServerEphemerisRepository(ISqlConnectionFactory connectionFactory) : IEphemerisRepository
+public sealed class SqlServerEphemerisRepository(IDbContextFactory<SolReadDbContext> factory) : IEphemerisRepository
 {
-  private readonly ISqlConnectionFactory _connectionFactory = connectionFactory;
+    // ── Body queries ──────────────────────────────────────────────────────────
 
-  private const string BodyColumns = @"
-    b.BodyId         AS Id,
-    COALESCE(NULLIF(LTRIM(RTRIM(b.Slug)), ''), CONCAT('body-', b.BodyId)) AS Slug,
-    COALESCE(NULLIF(LTRIM(RTRIM(b.DisplayName)), ''), NULLIF(LTRIM(RTRIM(b.Slug)), ''), CONCAT('body-', b.BodyId)) AS Name,
-    COALESCE(NULLIF(LTRIM(RTRIM(b.Kind)), ''), 'small-body') AS Kind,
-    b.ParentBodyId,
-    COALESCE(b.SortOrder, 2147483647) AS SortOrder,
-    b.JplHorizonsId,
-    b.SbdbDesig,
-    b.H_AbsMag,
-    COALESCE(b.HasEphemeris, CAST(0 AS bit)) AS HasEphemeris,
-    b.EphemerisMinJD,
-    b.EphemerisMaxJD,
-    b.EphemerisMinStr,
-    b.EphemerisMaxStr,
-    b.Eccentricity,
-    b.Perihelion_AU,
-    b.Aphelion_AU,
-    b.Inclination_deg,
-    b.LongAscNode_deg,
-    b.ArgPerihelion_deg,
-    b.SemiMajorAxis_AU,
-    b.MeanAnomaly_deg,
-    b.MeanMotion_degPerDay,
-    b.OrbitalPeriod_days,
-    b.Epoch_JD,
-    b.T_Perihelion_JD,
-    b.GM_km3s2,
-    b.MeanRadius_km,
-    b.EquatorialRadius_km,
-    b.Mass_1e23kg";
-
-  public async Task<IReadOnlyList<BodySummary>> GetBodiesAsync(double? hMax, int? maxBodies, CancellationToken cancellationToken)
-  {
-    var sql = new StringBuilder("SELECT");
-
-    if (maxBodies.HasValue)
-      sql.Append(" TOP (@maxBodies)");
-
-    sql.Append(BodyColumns)
-      .Append(" FROM dbo.Bodies b WHERE b.IsActive = 1");
-
-    if (hMax.HasValue)
-      sql.Append(" AND (b.H_AbsMag IS NULL OR b.H_AbsMag <= @hMax)");
-    else sql.Append(" AND b.Source != 'mpcorb' AND b.Kind IN ('star', 'planet', 'probe', 'moon', 'dwarf-planet', 'comet')"); // When no hMax, exclude non-authoritative MPCORB bodies which can have H_AbsMag IS NULL.
-
-    sql.Append(" ORDER BY b.SortOrder, b.DisplayName;");
-
-    await using var connection = _connectionFactory.CreateConnection();
-    await connection.OpenAsync(cancellationToken);
-    await using var command = new SqlCommand(sql.ToString(), connection) { CommandTimeout = 0 };
-    if (hMax.HasValue) command.Parameters.AddWithValue("@hMax", hMax.Value);
-    if (maxBodies.HasValue) command.Parameters.AddWithValue("@maxBodies", Math.Max(1, maxBodies.Value));
-    await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, cancellationToken);
-
-    var results = new List<BodySummary>();
-    while (await reader.ReadAsync(cancellationToken))
-      results.Add(ReadBodySummary(reader));
-    return results;
-  }
-
-  public async Task<IReadOnlyList<BodySummary>> GetBodiesBatchAsync(
-      double? hMinExclusive, double? hMaxInclusive, int take, int? afterBodyId, CancellationToken cancellationToken)
-  {
-    var sql = new StringBuilder("SELECT TOP (@take)")
-      .Append(BodyColumns)
-      .Append(" FROM dbo.Bodies b WHERE b.IsActive = 1");
-
-    if (afterBodyId.HasValue)
-      sql.Append(" AND b.BodyId > @afterBodyId");
-
-    if (hMaxInclusive.HasValue)
+    public async Task<IReadOnlyList<BodySummary>> GetBodiesAsync(double? hMax, int? maxBodies, CancellationToken cancellationToken)
     {
-      if (hMinExclusive.HasValue)
-      {
-        // Incremental H-step range: include only newly unlocked magnitude band.
-        sql.Append(" AND b.H_AbsMag IS NOT NULL AND b.H_AbsMag > @hMinExclusive AND b.H_AbsMag <= @hMaxInclusive");
-      }
-      else
-      {
-        // Initial pass: include authoritative bodies (H NULL) + bodies within threshold.
-        sql.Append(" AND (b.H_AbsMag IS NULL OR b.H_AbsMag <= @hMaxInclusive)");
-      }
+        await using var ctx = await factory.CreateDbContextAsync(cancellationToken);
+
+        var query = ctx.Bodies.AsNoTracking().Where(b => b.IsActive);
+
+        if (hMax.HasValue)
+            query = query.Where(b => b.H_AbsMag == null || b.H_AbsMag <= hMax.Value);
+        else
+        {
+            var kinds = new[] { "star", "planet", "probe", "moon", "dwarf-planet", "comet" };
+            query = query.Where(b => b.Source != "mpcorb" && kinds.Contains(b.Kind));
+        }
+
+        query = query.OrderBy(b => b.SortOrder).ThenBy(b => b.DisplayName);
+
+        if (maxBodies.HasValue)
+            query = query.Take(Math.Max(1, maxBodies.Value));
+
+        var entities = await query.ToListAsync(cancellationToken);
+        return entities.ConvertAll(ToSummary);
     }
-    else
+
+    public async Task<IReadOnlyList<BodySummary>> GetBodiesBatchAsync(
+        double? hMinExclusive, double? hMaxInclusive, int take, int? afterBodyId, CancellationToken cancellationToken)
     {
-      sql.Append(" AND b.Source != 'mpcorb'");
+        await using var ctx = await factory.CreateDbContextAsync(cancellationToken);
+
+        var query = ctx.Bodies.AsNoTracking().Where(b => b.IsActive);
+
+        if (afterBodyId.HasValue)
+            query = query.Where(b => b.BodyId > afterBodyId.Value);
+
+        if (hMaxInclusive.HasValue)
+        {
+            if (hMinExclusive.HasValue)
+                query = query.Where(b => b.H_AbsMag != null && b.H_AbsMag > hMinExclusive.Value && b.H_AbsMag <= hMaxInclusive.Value);
+            else
+                query = query.Where(b => b.H_AbsMag == null || b.H_AbsMag <= hMaxInclusive.Value);
+        }
+        else
+        {
+            query = query.Where(b => b.Source != "mpcorb");
+        }
+
+        var entities = await query
+            .OrderBy(b => b.BodyId)
+            .Take(Math.Clamp(take, 1, 50_000))
+            .ToListAsync(cancellationToken);
+
+        return entities.ConvertAll(ToSummary);
     }
 
-    sql.Append(" ORDER BY b.BodyId;");
-
-    await using var connection = _connectionFactory.CreateConnection();
-    await connection.OpenAsync(cancellationToken);
-    await using var command = new SqlCommand(sql.ToString(), connection) { CommandTimeout = 0 };
-    command.Parameters.AddWithValue("@take", Math.Clamp(take, 1, 50_000));
-    if (afterBodyId.HasValue) command.Parameters.AddWithValue("@afterBodyId", afterBodyId.Value);
-    if (hMinExclusive.HasValue) command.Parameters.AddWithValue("@hMinExclusive", hMinExclusive.Value);
-    if (hMaxInclusive.HasValue) command.Parameters.AddWithValue("@hMaxInclusive", hMaxInclusive.Value);
-
-    await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, cancellationToken);
-    var results = new List<BodySummary>();
-    while (await reader.ReadAsync(cancellationToken))
-      results.Add(ReadBodySummary(reader));
-    return results;
-  }
-
-  public async Task<IReadOnlyList<BodySummary>> SearchBodiesAsync(
-      string? query,
-      int limit,
-      bool completedEphemerisOnly,
-      bool namedOnly,
-      CancellationToken cancellationToken)
-  {
-    var sql = new StringBuilder("SELECT TOP (@limit)")
-      .Append(BodyColumns)
-      .Append(" FROM dbo.Bodies b WHERE b.IsActive = 1");
-
-    if (completedEphemerisOnly)
-      sql.Append(" AND b.CompletedEphemeris = 1");
-
-    if (namedOnly)
+    public async Task<IReadOnlyList<BodySummary>> SearchBodiesAsync(
+        string? query,
+        int limit,
+        bool completedEphemerisOnly,
+        bool namedOnly,
+        CancellationToken cancellationToken)
     {
-      sql.Append(@" AND b.DisplayName IS NOT NULL
-                    AND LEN(LTRIM(RTRIM(b.DisplayName))) > 0
-                    AND LTRIM(RTRIM(b.DisplayName)) NOT LIKE '[0-9]%' ");
+        await using var ctx = await factory.CreateDbContextAsync(cancellationToken);
+
+        var q = ctx.Bodies.AsNoTracking().Where(b => b.IsActive);
+
+        if (completedEphemerisOnly)
+            q = q.Where(b => b.CompletedEphemeris);
+
+        if (namedOnly)
+            q = q.Where(b =>
+                b.DisplayName.Trim().Length > 0 &&
+                !EF.Functions.Like(b.DisplayName.Trim(), "[0-9]%"));
+
+        var trimmed = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
+        if (trimmed is not null)
+        {
+            var contains = $"%{trimmed}%";
+            var prefix   = $"{trimmed}%";
+            q = q.Where(b =>
+                EF.Functions.Like(b.DisplayName, contains) ||
+                EF.Functions.Like(b.Slug,        contains) ||
+                EF.Functions.Like(b.SbdbDesig,   contains) ||
+                EF.Functions.Like(b.JplHorizonsId, contains));
+
+            q = q.OrderBy(b => EF.Functions.Like(b.DisplayName, prefix) ? 0 : 1)
+                 .ThenBy(b => EF.Functions.Like(b.Slug, prefix) ? 0 : 1)
+                 .ThenBy(b => b.SortOrder)
+                 .ThenBy(b => b.DisplayName);
+        }
+        else
+        {
+            q = q.OrderBy(b => b.SortOrder).ThenBy(b => b.DisplayName);
+        }
+
+        var entities = await q.Take(Math.Clamp(limit, 1, 2000)).ToListAsync(cancellationToken);
+        return entities.ConvertAll(ToSummary);
     }
 
-    var trimmed = string.IsNullOrWhiteSpace(query) ? null : query.Trim();
-    if (trimmed is not null)
+    public async Task<BodySummary?> GetBodyBySlugAsync(string slug, CancellationToken cancellationToken)
     {
-      sql.Append(@" AND (
-          b.DisplayName LIKE @contains
-          OR b.Slug LIKE @contains
-          OR b.SbdbDesig LIKE @contains
-          OR b.JplHorizonsId LIKE @contains
-      )");
-
-      sql.Append(@" ORDER BY
-        CASE WHEN b.DisplayName LIKE @prefix THEN 0 ELSE 1 END,
-        CASE WHEN b.Slug LIKE @prefix THEN 0 ELSE 1 END,
-        b.SortOrder,
-        b.DisplayName;");
+        await using var ctx = await factory.CreateDbContextAsync(cancellationToken);
+        var entity = await ctx.Bodies.AsNoTracking()
+            .FirstOrDefaultAsync(b => b.IsActive && b.Slug == slug, cancellationToken);
+        return entity is null ? null : ToSummary(entity);
     }
-    else
+
+    // ── Ephemeris sample queries ──────────────────────────────────────────────
+
+    public async Task<IReadOnlyList<EphemerisSample>> GetSamplesByBodyIdAsync(
+        int bodyId, DateTime startUtc, DateTime endUtc, int limit, CancellationToken cancellationToken)
     {
-      sql.Append(" ORDER BY b.SortOrder, b.DisplayName;");
+        double startJd = JulianDateConverter.FromDateTime(DateTime.SpecifyKind(startUtc, DateTimeKind.Utc));
+        double endJd   = JulianDateConverter.FromDateTime(DateTime.SpecifyKind(endUtc,   DateTimeKind.Utc));
+
+        await using var ctx = await factory.CreateDbContextAsync(cancellationToken);
+        var rows = await ctx.EphemerisSamples.AsNoTracking()
+            .Where(s => s.BodyId == bodyId && s.SampleJd >= startJd && s.SampleJd <= endJd)
+            .OrderBy(s => s.SampleJd)
+            .Take(limit)
+            .ToListAsync(cancellationToken);
+
+        return rows.ConvertAll(s => new EphemerisSample(s.BodyId, s.SampleJd,
+            s.X_AU, s.Y_AU, s.Z_AU,
+            s.VX_AUPerDay, s.VY_AUPerDay, s.VZ_AUPerDay,
+            s.Frame));
     }
 
-    await using var connection = _connectionFactory.CreateConnection();
-    await connection.OpenAsync(cancellationToken);
-    await using var command = new SqlCommand(sql.ToString(), connection);
-    command.Parameters.AddWithValue("@limit", Math.Clamp(limit, 1, 2000));
-    if (trimmed is not null)
-    {
-      command.Parameters.AddWithValue("@contains", $"%{trimmed}%");
-      command.Parameters.AddWithValue("@prefix", $"{trimmed}%");
-    }
-
-    await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, cancellationToken);
-    var results = new List<BodySummary>();
-    while (await reader.ReadAsync(cancellationToken))
-      results.Add(ReadBodySummary(reader));
-    return results;
-  }
-
-  public async Task<BodySummary?> GetBodyBySlugAsync(string slug, CancellationToken cancellationToken)
-  {
-    var sql = "SELECT" + BodyColumns +
-      " FROM dbo.Bodies b WHERE b.IsActive = 1 AND b.Slug = @slug;";
-
-    await using var connection = _connectionFactory.CreateConnection();
-    await connection.OpenAsync(cancellationToken);
-    await using var command = new SqlCommand(sql, connection);
-    command.Parameters.AddWithValue("@slug", slug);
-    await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SingleRow, cancellationToken);
-
-    if (!await reader.ReadAsync(cancellationToken)) return null;
-    return ReadBodySummary(reader);
-  }
-
-  public async Task<IReadOnlyList<EphemerisSample>> GetSamplesByBodyIdAsync(int bodyId, DateTime startUtc, DateTime endUtc, int limit, CancellationToken cancellationToken)
-  {
-    double startJd = JulianDateConverter.FromDateTime(DateTime.SpecifyKind(startUtc, DateTimeKind.Utc));
-    double endJd   = JulianDateConverter.FromDateTime(DateTime.SpecifyKind(endUtc,   DateTimeKind.Utc));
-
-    const string sql = @"
-SELECT TOP (@limit) BodyId, SampleJd,
-  X_AU AS X, Y_AU AS Y, Z_AU AS Z,
-  VX_AUPerDay AS Vx, VY_AUPerDay AS Vy, VZ_AUPerDay AS Vz,
-  Frame
-FROM dbo.EphemerisSamples
-WHERE BodyId = @bodyId
-  AND SampleJd >= @startJd
-  AND SampleJd <= @endJd
-ORDER BY SampleJd;";
-
-    await using var connection = _connectionFactory.CreateConnection();
-    await connection.OpenAsync(cancellationToken);
-    await using var command = new SqlCommand(sql, connection);
-    command.Parameters.AddWithValue("@bodyId",  bodyId);
-    command.Parameters.AddWithValue("@startJd", startJd);
-    command.Parameters.AddWithValue("@endJd",   endJd);
-    command.Parameters.AddWithValue("@limit",   limit);
-    await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, cancellationToken);
-
-    var results = new List<EphemerisSample>();
-    while (await reader.ReadAsync(cancellationToken)) {
-      results.Add(new EphemerisSample(
-        BodyId:   GetInt32(reader, "BodyId"),
-        SampleJd: GetDouble(reader, "SampleJd"),
-        X:  GetDouble(reader, "X"),
-        Y:  GetDouble(reader, "Y"),
-        Z:  GetDouble(reader, "Z"),
-        Vx: GetNullableDouble(reader, "Vx"),
-        Vy: GetNullableDouble(reader, "Vy"),
-        Vz: GetNullableDouble(reader, "Vz"),
-        Frame: GetNullableString(reader, "Frame")));
-    }
-    return results;
-  }
-
-      public async Task<IReadOnlyList<EphemerisSample>> GetBulkSamplesAsync(
+    public async Task<IReadOnlyList<EphemerisSample>> GetBulkSamplesAsync(
         DateTime startUtc, DateTime endUtc, double? hMax, int step, int? maxBodies, CancellationToken cancellationToken)
-  {
-    double startJd = JulianDateConverter.FromDateTime(DateTime.SpecifyKind(startUtc, DateTimeKind.Utc));
-    double endJd   = JulianDateConverter.FromDateTime(DateTime.SpecifyKind(endUtc,   DateTimeKind.Utc));
+    {
+        double startJd = JulianDateConverter.FromDateTime(DateTime.SpecifyKind(startUtc, DateTimeKind.Utc));
+        double endJd   = JulianDateConverter.FromDateTime(DateTime.SpecifyKind(endUtc,   DateTimeKind.Utc));
 
-    // Include bodies with NULL H_AbsMag (authoritative bodies: planets, moons, etc.)
-    // and bodies with H_AbsMag <= hMax. When hMax is null, restrict to authoritative kinds only.
-    var hFilter = hMax.HasValue
-      ? "AND (b.H_AbsMag IS NULL OR b.H_AbsMag <= @hMax)"
-      : "AND b.Source != 'mpcorb' AND b.Kind IN ('star', 'planet', 'probe', 'moon', 'dwarf-planet', 'comet')";
+        var hFilter = hMax.HasValue
+            ? "AND (b.H_AbsMag IS NULL OR b.H_AbsMag <= @hMax)"
+            : "AND b.Source != 'mpcorb' AND b.Kind IN ('star', 'planet', 'probe', 'moon', 'dwarf-planet', 'comet')";
 
-    // step=1 returns every sample; step=N picks one sample per N days (ROW_NUMBER per body).
-    var sql = step <= 1 ? $@"
-WITH selectedBodies AS (
-  SELECT TOP (@maxBodies)
-    b.BodyId
-  FROM dbo.Bodies b
-  WHERE b.IsActive = 1
-    AND b.HasEphemeris = 1
-    {hFilter}
-  ORDER BY
-    CASE WHEN b.Source = 'mpcorb' THEN 1 ELSE 0 END,
-    COALESCE(b.SortOrder, 2147483647),
-    CASE WHEN b.H_AbsMag IS NULL THEN 0 ELSE 1 END,
-    ISNULL(b.H_AbsMag, 0),
-    b.BodyId
-)
+        // Subquery-based SQL (no CTEs so EF Core can safely wrap it).
+        var sql = step <= 1 ? $@"
 SELECT e.BodyId, e.SampleJd,
   e.X_AU AS X, e.Y_AU AS Y, e.Z_AU AS Z,
   e.VX_AUPerDay AS Vx, e.VY_AUPerDay AS Vy, e.VZ_AUPerDay AS Vz
 FROM dbo.EphemerisSamples e
-INNER JOIN selectedBodies sb ON sb.BodyId = e.BodyId
-WHERE e.SampleJd >= @startJd
-  AND e.SampleJd <= @endJd
-ORDER BY e.SampleJd, e.BodyId;" : $@"
-WITH selectedBodies AS (
-  SELECT TOP (@maxBodies)
-    b.BodyId
+INNER JOIN (
+  SELECT TOP (@maxBodies) b.BodyId
   FROM dbo.Bodies b
-  WHERE b.IsActive = 1
-    AND b.HasEphemeris = 1
+  WHERE b.IsActive = 1 AND b.HasEphemeris = 1
     {hFilter}
   ORDER BY
     CASE WHEN b.Source = 'mpcorb' THEN 1 ELSE 0 END,
@@ -279,95 +163,89 @@ WITH selectedBodies AS (
     CASE WHEN b.H_AbsMag IS NULL THEN 0 ELSE 1 END,
     ISNULL(b.H_AbsMag, 0),
     b.BodyId
-),
-ranked AS (
+) AS sb ON sb.BodyId = e.BodyId
+WHERE e.SampleJd >= @startJd AND e.SampleJd <= @endJd"
+: $@"
+SELECT BodyId, SampleJd, X, Y, Z, Vx, Vy, Vz
+FROM (
   SELECT e.BodyId, e.SampleJd,
     e.X_AU AS X, e.Y_AU AS Y, e.Z_AU AS Z,
     e.VX_AUPerDay AS Vx, e.VY_AUPerDay AS Vy, e.VZ_AUPerDay AS Vz,
     ROW_NUMBER() OVER (PARTITION BY e.BodyId ORDER BY e.SampleJd) AS rn
   FROM dbo.EphemerisSamples e
-  INNER JOIN selectedBodies sb ON sb.BodyId = e.BodyId
-  WHERE e.SampleJd >= @startJd
-    AND e.SampleJd <= @endJd
-)
-SELECT BodyId, SampleJd, X, Y, Z, Vx, Vy, Vz
-FROM ranked
-WHERE rn % @step = 1
-ORDER BY SampleJd, BodyId;";
+  INNER JOIN (
+    SELECT TOP (@maxBodies) b.BodyId
+    FROM dbo.Bodies b
+    WHERE b.IsActive = 1 AND b.HasEphemeris = 1
+      {hFilter}
+    ORDER BY
+      CASE WHEN b.Source = 'mpcorb' THEN 1 ELSE 0 END,
+      COALESCE(b.SortOrder, 2147483647),
+      CASE WHEN b.H_AbsMag IS NULL THEN 0 ELSE 1 END,
+      ISNULL(b.H_AbsMag, 0),
+      b.BodyId
+  ) AS sb ON sb.BodyId = e.BodyId
+  WHERE e.SampleJd >= @startJd AND e.SampleJd <= @endJd
+) AS ranked
+WHERE rn % @step = 1";
 
-    await using var connection = _connectionFactory.CreateConnection();
-    await connection.OpenAsync(cancellationToken);
-    await using var command = new SqlCommand(sql, connection) { CommandTimeout = 0 };
-    command.Parameters.AddWithValue("@startJd", startJd);
-    command.Parameters.AddWithValue("@endJd",   endJd);
-    command.Parameters.AddWithValue("@maxBodies", Math.Max(1, maxBodies ?? int.MaxValue));
-    if (hMax.HasValue) command.Parameters.AddWithValue("@hMax", hMax.Value);
-    if (step > 1)      command.Parameters.AddWithValue("@step", step);
-    await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, cancellationToken);
+        var sqlParams = new List<object>
+        {
+            new SqlParameter("@startJd",   startJd),
+            new SqlParameter("@endJd",     endJd),
+            new SqlParameter("@maxBodies", Math.Max(1, maxBodies ?? int.MaxValue)),
+        };
+        if (hMax.HasValue) sqlParams.Add(new SqlParameter("@hMax",  hMax.Value));
+        if (step > 1)      sqlParams.Add(new SqlParameter("@step",  step));
 
-    var results = new List<EphemerisSample>();
-    while (await reader.ReadAsync(cancellationToken)) {
-      results.Add(new EphemerisSample(
-        BodyId:   GetInt32(reader, "BodyId"),
-        SampleJd: GetDouble(reader, "SampleJd"),
-        X:  GetDouble(reader, "X"),
-        Y:  GetDouble(reader, "Y"),
-        Z:  GetDouble(reader, "Z"),
-        Vx: GetNullableDouble(reader, "Vx"),
-        Vy: GetNullableDouble(reader, "Vy"),
-        Vz: GetNullableDouble(reader, "Vz"),
-        Frame: null));
+        await using var ctx = await factory.CreateDbContextAsync(cancellationToken);
+        var rows = await ctx.Database.SqlQueryRaw<BulkSampleRow>(sql, sqlParams)
+            .OrderBy(r => r.SampleJd).ThenBy(r => r.BodyId)
+            .ToListAsync(cancellationToken);
+
+        return rows.ConvertAll(r => new EphemerisSample(r.BodyId, r.SampleJd,
+            r.X, r.Y, r.Z, r.Vx, r.Vy, r.Vz, Frame: null));
     }
-    return results;
-  }
 
-  private static BodySummary ReadBodySummary(SqlDataReader r) => new(
-    Id:                  GetInt32(r,  "Id"),
-    Slug:                GetString(r, "Slug"),
-    Name:                GetString(r, "Name"),
-    Kind:                GetString(r, "Kind"),
-    ParentBodyId:        GetNullableInt32(r,  "ParentBodyId"),
-    SortOrder:           GetInt32(r,  "SortOrder"),
-    JplHorizonsId:       GetNullableString(r, "JplHorizonsId"),
-    SbdbDesig:           GetNullableString(r, "SbdbDesig"),
-    H_AbsMag:            GetNullableDouble(r, "H_AbsMag"),
-    HasEphemeris:        r.GetBoolean(r.GetOrdinal("HasEphemeris")),
-    EphemerisMinJD:      GetNullableDouble(r, "EphemerisMinJD"),
-    EphemerisMaxJD:      GetNullableDouble(r, "EphemerisMaxJD"),
-    EphemerisMinStr:     GetNullableString(r, "EphemerisMinStr"),
-    EphemerisMaxStr:     GetNullableString(r, "EphemerisMaxStr"),
-    Eccentricity:        GetNullableDouble(r, "Eccentricity"),
-    Perihelion_AU:       GetNullableDouble(r, "Perihelion_AU"),
-    Aphelion_AU:         GetNullableDouble(r, "Aphelion_AU"),
-    Inclination_deg:     GetNullableDouble(r, "Inclination_deg"),
-    LongAscNode_deg:     GetNullableDouble(r, "LongAscNode_deg"),
-    ArgPerihelion_deg:   GetNullableDouble(r, "ArgPerihelion_deg"),
-    SemiMajorAxis_AU:    GetNullableDouble(r, "SemiMajorAxis_AU"),
-    MeanAnomaly_deg:     GetNullableDouble(r, "MeanAnomaly_deg"),
-    MeanMotion_degPerDay:GetNullableDouble(r, "MeanMotion_degPerDay"),
-    OrbitalPeriod_days:  GetNullableDouble(r, "OrbitalPeriod_days"),
-    Epoch_JD:            GetNullableDouble(r, "Epoch_JD"),
-    T_Perihelion_JD:     GetNullableDouble(r, "T_Perihelion_JD"),
-    GM_km3s2:            GetNullableDouble(r, "GM_km3s2"),
-    MeanRadius_km:       GetNullableDouble(r, "MeanRadius_km"),
-    EquatorialRadius_km: GetNullableDouble(r, "EquatorialRadius_km"),
-    Mass_1e23kg:         GetNullableDouble(r, "Mass_1e23kg")
-  );
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
-  private static int    GetInt32(SqlDataReader r, string col)  => r.GetInt32(r.GetOrdinal(col));
-  private static string GetString(SqlDataReader r, string col) => r.GetString(r.GetOrdinal(col));
-  private static double GetDouble(SqlDataReader r, string col) => r.GetDouble(r.GetOrdinal(col));
+    private static BodySummary ToSummary(BodyEntity b) => new(
+        Id:                   b.BodyId,
+        Slug:                 string.IsNullOrWhiteSpace(b.Slug)        ? $"body-{b.BodyId}" : b.Slug.Trim(),
+        Name:                 !string.IsNullOrWhiteSpace(b.DisplayName) ? b.DisplayName.Trim()
+                            : !string.IsNullOrWhiteSpace(b.Slug)        ? b.Slug.Trim()
+                            : $"body-{b.BodyId}",
+        Kind:                 string.IsNullOrWhiteSpace(b.Kind)        ? "small-body" : b.Kind.Trim(),
+        ParentBodyId:         b.ParentBodyId,
+        SortOrder:            b.SortOrder,
+        JplHorizonsId:        b.JplHorizonsId,
+        SbdbDesig:            b.SbdbDesig,
+        H_AbsMag:             b.H_AbsMag,
+        HasEphemeris:         b.HasEphemeris,
+        EphemerisMinJD:       b.EphemerisMinJD,
+        EphemerisMaxJD:       b.EphemerisMaxJD,
+        EphemerisMinStr:      b.EphemerisMinStr,
+        EphemerisMaxStr:      b.EphemerisMaxStr,
+        Eccentricity:         b.Eccentricity,
+        Perihelion_AU:        b.Perihelion_AU,
+        Aphelion_AU:          b.Aphelion_AU,
+        Inclination_deg:      b.Inclination_deg,
+        LongAscNode_deg:      b.LongAscNode_deg,
+        ArgPerihelion_deg:    b.ArgPerihelion_deg,
+        SemiMajorAxis_AU:     b.SemiMajorAxis_AU,
+        MeanAnomaly_deg:      b.MeanAnomaly_deg,
+        MeanMotion_degPerDay: b.MeanMotion_degPerDay,
+        OrbitalPeriod_days:   b.OrbitalPeriod_days,
+        Epoch_JD:             b.Epoch_JD,
+        T_Perihelion_JD:      b.T_Perihelion_JD,
+        GM_km3s2:             b.GM_km3s2,
+        MeanRadius_km:        b.MeanRadius_km,
+        EquatorialRadius_km:  b.EquatorialRadius_km,
+        Mass_1e23kg:          b.Mass_1e23kg
+    );
 
-  private static int? GetNullableInt32(SqlDataReader r, string col) {
-    var ord = r.GetOrdinal(col);
-    return r.IsDBNull(ord) ? null : r.GetInt32(ord);
-  }
-  private static double? GetNullableDouble(SqlDataReader r, string col) {
-    var ord = r.GetOrdinal(col);
-    return r.IsDBNull(ord) ? null : r.GetDouble(ord);
-  }
-  private static string? GetNullableString(SqlDataReader r, string col) {
-    var ord = r.GetOrdinal(col);
-    return r.IsDBNull(ord) ? null : r.GetString(ord);
-  }
+    private sealed record BulkSampleRow(
+        int BodyId, double SampleJd,
+        double X, double Y, double Z,
+        double? Vx, double? Vy, double? Vz);
 }

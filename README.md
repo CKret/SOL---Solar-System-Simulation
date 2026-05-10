@@ -121,17 +121,17 @@ dotnet run --project backend/Sol.Api -- import-mpcorb full     # full ~1.5 milli
 **3. Ephemeris samples** — fetches state vectors from the JPL Horizons API for bodies that have a stored Horizons date range:
 
 ```bash
-dotnet run --project backend/Sol.Api -- import-samples [--bodies=slug1,slug2,...] [--bodyIds=1,2,...] [--skip-sync] [h_max] [startUtc] [endUtc] [step]
+dotnet run --project backend/Sol.Api -- import-samples [--bodies=slug1,slug2,...] [--bodyIds=1,2,...] [--sync-catalog] [h_max] [startUtc] [endUtc] [step]
 ```
 
 - `--bodies`: comma-separated slug list for targeted imports (bypasses `CompletedEphemeris` filter).
 - `--bodyIds`: comma-separated body ID list; same bypass behaviour as `--bodies`.
-- `--skip-sync`: skip the authoritative catalog sync step (saves time on targeted re-imports).
+- `--sync-catalog`: re-sync the authoritative body catalog before importing (useful when Horizons IDs, date ranges, or curated-body metadata may have changed; skipped by default for faster targeted re-imports).
 - `h_max`: absolute magnitude cutoff — imports bodies where `H <= h_max` or `H IS NULL` (authoritative bodies). Omit to import all eligible bodies.
 - `startUtc` / `endUtc`: optional batch window clipped to each body's stored Horizons range.
 - `step`: sample rate — `daily`, `hourly`, `<n>h`, `<n>d`. Defaults to 1 day.
 
-Before the sample import starts, the command re-syncs the authoritative body catalog (unless `--skip-sync` is given) so newly changed Horizons IDs, date ranges, and curated-body metadata are present before chunk fetches begin. For probe encounter windows (e.g. Cassini at Saturn, Voyager at Jupiter), the importer automatically switches to 1-hour sampling within the registered encounter interval and falls back to daily sampling outside it.
+When `--sync-catalog` is given, the command first re-syncs the authoritative body catalog (with up to 2 concurrent Horizons/SBDB requests) so newly changed Horizons IDs, date ranges, and curated-body metadata are present before chunk fetches begin. For probe encounter windows (e.g. Cassini at Saturn, Voyager at Jupiter), the importer automatically switches to 1-hour sampling within the registered encounter interval and falls back to daily sampling outside it. All console output is prefixed with a `[HH:mm:ss]` timestamp so long overnight runs can be audited after the fact.
 
 Example — import daily samples for all bodies brighter than H=15 (≈ 83,000 objects) over their full available date range:
 
@@ -139,13 +139,13 @@ Example — import daily samples for all bodies brighter than H=15 (≈ 83,000 o
 dotnet run --project backend/Sol.Api -- import-samples 15
 ```
 
-Example — re-import Cassini's trajectory at full daily resolution without re-syncing the catalog:
+Example — re-import Cassini's trajectory at full daily resolution and also re-sync the catalog:
 
 ```bash
-dotnet run --project backend/Sol.Api -- import-samples --bodies=cassini --skip-sync
+dotnet run --project backend/Sol.Api -- import-samples --bodies=cassini --sync-catalog
 ```
 
-Imports are resumable: each fetched chunk is logged in `dbo.EphemerisImportLog` and skipped on re-runs. A body is marked `CompletedEphemeris=1` once its entire stored date range is fully logged. The importer runs bodies in parallel, bulk-inserts samples through a streaming reader instead of staging a full in-memory `DataTable`, and creates the merge lookup index used by duplicate checks before the run so long imports do not degrade as sharply as the target table grows.
+Imports are resumable: each fetched chunk is logged in `dbo.EphemerisImportLog` and skipped on re-runs. A body is marked `CompletedEphemeris=1` once its entire stored date range is fully logged. The importer runs 2 bodies in parallel (2×1 parallelism — 2 concurrent bodies, 1 sequential chunk fetch per body), bulk-inserts samples through a streaming reader instead of staging a full in-memory `DataTable`, and creates the merge lookup index used by duplicate checks before the run so long imports do not degrade as sharply as the target table grows.
 
 **4. Retry zero-sample chunks** — retries import log chunks where Horizons previously returned zero samples, with optional boundary shrinking on edge chunks:
 
@@ -307,6 +307,7 @@ For IIS hosting, publish the app and point the IIS site at the published output.
 - Vanilla JavaScript
 - HTML/CSS
 - ASP.NET Core (backend API)
+- Entity Framework Core (DB-first data access)
 - SQL Server (ephemeris sample store)
 - NASA/JPL Horizons trajectory and ephemeris data
 - IAU WGCCRE planet pole/rotation data

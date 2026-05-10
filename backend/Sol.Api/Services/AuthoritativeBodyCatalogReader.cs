@@ -23,26 +23,36 @@ public sealed partial class AuthoritativeBodyCatalogReader : IAuthoritativeBodyC
 
     public async Task<IReadOnlyList<CatalogBodySeed>> ReadBodiesAsync(CancellationToken cancellationToken)
     {
-        var seeds = new List<CatalogBodySeed>();
-
-        var horizonsTargets = AuthoritativeCatalogManifest.Targets.Where(target => target.HorizonsCommand is not null && target.SbdbDesignation is null).ToList();
-        var sbdbTargets = AuthoritativeCatalogManifest.Targets.Where(target => target.SbdbDesignation is not null).ToList();
+        var horizonsTargets = AuthoritativeCatalogManifest.Targets.Where(t => t.HorizonsCommand is not null && t.SbdbDesignation is null).ToList();
+        var sbdbTargets     = AuthoritativeCatalogManifest.Targets.Where(t => t.SbdbDesignation is not null).ToList();
         var total = horizonsTargets.Count + sbdbTargets.Count;
-        var done = 0;
+        int done  = 0;
 
-        foreach (var target in horizonsTargets)
-        {
-            Console.WriteLine($"  Syncing body catalog [{++done}/{total}]: {target.HorizonsCommand}");
-            seeds.Add(await ReadHorizonsSeedAsync(target, cancellationToken));
-        }
+        var seeds = new System.Collections.Concurrent.ConcurrentBag<CatalogBodySeed>();
 
-        foreach (var target in sbdbTargets)
-        {
-            Console.WriteLine($"  Syncing body catalog [{++done}/{total}]: {target.SbdbDesignation}");
-            var seed = await ReadSbdbSeedAsync(target, cancellationToken);
-            if (seed is not null) seeds.Add(seed);
-        }
-        return seeds;
+        await Parallel.ForEachAsync(horizonsTargets,
+            new ParallelOptions { MaxDegreeOfParallelism = 2, CancellationToken = cancellationToken },
+            async (target, ct) =>
+            {
+                Console.WriteLine($"  Syncing body catalog [{Interlocked.Increment(ref done)}/{total}]: {target.HorizonsCommand}");
+                try { seeds.Add(await ReadHorizonsSeedAsync(target, ct)); }
+                catch (Exception ex) { Console.Error.WriteLine($"  WARN {target.HorizonsCommand}: {ex.Message}"); }
+            });
+
+        await Parallel.ForEachAsync(sbdbTargets,
+            new ParallelOptions { MaxDegreeOfParallelism = 2, CancellationToken = cancellationToken },
+            async (target, ct) =>
+            {
+                Console.WriteLine($"  Syncing body catalog [{Interlocked.Increment(ref done)}/{total}]: {target.SbdbDesignation}");
+                try
+                {
+                    var seed = await ReadSbdbSeedAsync(target, ct);
+                    if (seed is not null) seeds.Add(seed);
+                }
+                catch (Exception ex) { Console.Error.WriteLine($"  WARN {target.SbdbDesignation}: {ex.Message}"); }
+            });
+
+        return seeds.ToList();
     }
 
   private async Task<CatalogBodySeed> ReadHorizonsSeedAsync(AuthoritativeCatalogTarget target, CancellationToken cancellationToken)
