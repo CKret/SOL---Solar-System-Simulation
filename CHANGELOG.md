@@ -2,6 +2,15 @@
 
 This changelog is derived from the project's git commit messages and is listed newest first.
 
+## 2026-05-10 (later)
+
+### Fixed
+- `80201a7` Fixed mobile tap-to-focus: `e.preventDefault()` on touchstart was blocking the browser's synthetic click event, so tapping objects never triggered selection. Selection logic extracted into `handleSceneClick(cx, cy)` and called from both the desktop click handler and a new tap detector in touchend (single finger, movement < 8 px).
+- `80201a7` Fixed two-finger rotation direction in geo-lock mode.
+
+### Added
+- `80201a7` Two-finger twist gesture now rotates the camera around its Z-axis (roll): in geo-lock mode it rotates `geoLockLocalUp` around the camera direction; in all other modes it drives `cameraRoll`. Pinch-zoom continues to work simultaneously.
+
 ## 2026-05-10
 
 ### Fixed
