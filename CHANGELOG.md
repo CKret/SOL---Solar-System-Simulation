@@ -2,6 +2,21 @@
 
 This changelog is derived from the project's git commit messages and is listed newest first.
 
+## 2026-05-11
+
+### Changed
+- `95ec34e` Replaced raw ADO.NET (`SqlConnection`/`SqlCommand`) with Entity Framework Core (DB-first) across all importers and services. New data access uses `IDbContextFactory<T>` for per-operation contexts; `ISqlConnectionFactory` and `ISqlWriteConnectionFactory` removed.
+- `95ec34e` `import-samples` parallelism reduced from 5×1 to 2×1 (bodies × chunks) to stay within JPL Horizons rate limits.
+- `95ec34e` `--skip-sync` flag replaced by `--sync-catalog` (inverted: catalog sync is now opt-in, defaulting to skipped for faster targeted re-imports).
+- `95ec34e` Authoritative body catalog sync parallelized (up to 2 concurrent Horizons/SBDB requests), significantly reducing per-run sync time.
+- `95ec34e` All console output prefixed with a `[HH:mm:ss]` wall-clock timestamp for auditing long overnight import runs.
+
+### Fixed
+- `95ec34e` Removed an unconditional 1 s delay between chunk fetches that was being applied without intent; its removal reduces large import times by roughly 30%.
+- `95ec34e` `DeactivateMissingBodiesAsync` no longer times out on large catalogs: replaced `NOT IN (N params)` with a temp table + `NOT EXISTS` pattern so SQL Server uses index seeks on `dbo.Bodies` instead of a full scan.
+- `95ec34e` Ephemeris sample MERGE step no longer hits the default 30 s command timeout: timeout raised to 600 s for the MERGE in `InsertSamplesAsync`.
+- `95ec34e` EF Core SQL query logging suppressed to Warning level so import console output is not flooded with generated SQL statements.
+
 ## 2026-05-10 (later)
 
 ### Fixed
