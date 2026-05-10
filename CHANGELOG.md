@@ -2,6 +2,21 @@
 
 This changelog is derived from the project's git commit messages and is listed newest first.
 
+## 2026-05-10
+
+### Fixed
+- `6e8ce46` Fixed planet axial tilt and ring plane orientation for all planets: replaced the incorrect obliquity/longitude lookup tables with IAU WGCCRE J2000 pole RA/Dec values and a proper equatorial-to-ecliptic coordinate conversion (ε = 23.4393°). Saturn's ring plane was previously off by ~17.7°; it now matches JPL Horizons geometry, allowing accurate reproduction of probe viewpoints such as the Cassini March 2006 nearly edge-on ring photo.
+- `6e8ce46` Removed probe-proximity planet fade: planets no longer become semi-transparent when a space probe passes nearby.
+
+### Added
+- `6e8ce46` Look-at dropdown replaces the single "Look at Sun" button: camera can now be locked to point toward the Sun or any of the eight planets while keeping focus on the current body.
+- `6e8ce46` Import command `import-samples` now accepts `--bodies=slug1,slug2,...`, `--bodyIds=id1,id2,...`, and `--skip-sync` flags for targeted dense re-imports without re-running the full authoritative catalog sync.
+- `6e8ce46` Hourly encounter windows registered for all tracked probes (Cassini, Pioneer 10 & 11, New Horizons, Juno, Parker Solar Probe, BepiColombo, Galileo, MESSENGER, Dawn, Rosetta, OSIRIS-REx) in addition to the existing Voyager windows, so planetary flybys and orbit insertions are imported at 1-hour resolution automatically.
+
+### Changed
+- `6e8ce46` Camera zoom and pan offsets reset when switching focus to a new object so the view starts clean rather than inheriting the previous body's zoom level.
+- `6e8ce46` Zoom range extended to ±2,000,000 scene units; wheel handler now updates both `camR` and `targetR` immediately so the change takes effect without a lerp delay.
+
 ## 2026-05-09
 
 ### Fixed
