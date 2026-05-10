@@ -60,8 +60,8 @@ This changelog is derived from the project's git commit messages and is listed n
 - `4b9f6bc` Body catalog sync phase now logs per-body progress so `import-samples` no longer appears stalled during startup.
 
 ### Added
-- `60d4552` Incremental body-batch API: `GET /api/bodies/batch` now serves keyset-paginated H-band slices so the frontend can load minor-planet metadata in smaller background batches instead of re-requesting the full `h_max` range each time.
-- `60d4552` Body catalog is now merged incrementally into the existing frontend catalog during background warm-up instead of replacing it.
+- `60d4552` Incremental body-batch API: `GET /api/bodies/batch` now serves keyset-paginated H-band slices for targeted range fetches; the backend endpoint is in place for future incremental loading scenarios.
+- `60d4552` Body catalog merge now adds new entries without replacing already-cached bodies, so future incremental fetches can be appended safely.
 
 ### Changed
 - `60d4552` `import-samples` now syncs the authoritative body catalog before fetching Horizons chunks, so curated bodies are refreshed automatically at import start.
