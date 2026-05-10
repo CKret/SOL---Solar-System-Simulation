@@ -1,4 +1,6 @@
 using Microsoft.Data.SqlClient;
+using Microsoft.EntityFrameworkCore;
+using Sol.Api.Data;
 using System.Data;
 using System.Globalization;
 using System.IO.Compression;
@@ -7,7 +9,7 @@ using System.Text.Json.Serialization;
 
 namespace Sol.Api.Services;
 
-public sealed class MpcorbImporter(HttpClient httpClient, ISqlWriteConnectionFactory connectionFactory)
+public sealed class MpcorbImporter(HttpClient httpClient, IDbContextFactory<SolWriteDbContext> dbContextFactory)
 {
     private const string NeaUrl    = "https://minorplanetcenter.net/Extended_Files/nea_extended.json.gz";
     private const string MpcorbUrl = "https://minorplanetcenter.net/Extended_Files/mpcorb_extended.json.gz";
@@ -197,8 +199,8 @@ public sealed class MpcorbImporter(HttpClient httpClient, ISqlWriteConnectionFac
 
     private async Task<(int Inserted, int Updated)> BulkUpsertAsync(DataTable table, CancellationToken cancellationToken)
     {
-        await using var connection = connectionFactory.CreateConnection();
-        await connection.OpenAsync(cancellationToken);
+        await using var ctx = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        await ctx.Database.OpenConnectionAsync(cancellationToken);
 
         const string createStage = @"
             CREATE TABLE #mpc_stage (
@@ -223,9 +225,9 @@ public sealed class MpcorbImporter(HttpClient httpClient, ISqlWriteConnectionFac
                 SbdbDesig            NVARCHAR(64)  COLLATE DATABASE_DEFAULT NULL,
                 SortOrder            INT NOT NULL
             );";
-        await using (var cmd = new SqlCommand(createStage, connection))
-            await cmd.ExecuteNonQueryAsync(cancellationToken);
+        await ctx.Database.ExecuteSqlRawAsync(createStage, cancellationToken);
 
+        var connection = (SqlConnection)ctx.Database.GetDbConnection();
         using (var bulk = new SqlBulkCopy(connection) { DestinationTableName = "#mpc_stage", BulkCopyTimeout = 0 })
         {
             foreach (DataColumn col in table.Columns)
@@ -237,7 +239,9 @@ public sealed class MpcorbImporter(HttpClient httpClient, ISqlWriteConnectionFac
 
         // Default epoch coverage for small bodies per JPL Horizons time_spans: 1599-Dec-10 23:59 to 2500-Dec-31 23:58.
         // COALESCE on update preserves any authoritative value already written by a JPL epoch query.
-        const string merge = @"
+        // OUTPUT is captured to #mpc_results so we can count inserts vs updates without streaming a reader.
+        const string mergeAndCapture = @"
+            CREATE TABLE #mpc_results (Act NVARCHAR(10) NOT NULL);
             MERGE dbo.Bodies AS tgt
             USING #mpc_stage AS src ON tgt.Slug = src.Slug
             WHEN MATCHED THEN UPDATE SET
@@ -283,17 +287,19 @@ public sealed class MpcorbImporter(HttpClient httpClient, ISqlWriteConnectionFac
                 src.Epoch_JD, src.T_Perihelion_JD, src.JplHorizonsId, src.SbdbDesig, src.SortOrder,
                 2305426.499, 2634531.499, '1599-Dec-10 23:59', '2500-Dec-31 23:58'
             )
-            OUTPUT $action;";
+            OUTPUT $action INTO #mpc_results(Act);";
 
-        await using var mergeCmd = new SqlCommand(merge, connection) { CommandTimeout = 600 };
-        await using var reader = await mergeCmd.ExecuteReaderAsync(cancellationToken);
+        ctx.Database.SetCommandTimeout(600);
+        await ctx.Database.ExecuteSqlRawAsync(mergeAndCapture, cancellationToken);
+        ctx.Database.SetCommandTimeout(null);
 
-        int inserted = 0, updated = 0;
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            if (reader.GetString(0) == "INSERT") inserted++;
-            else updated++;
-        }
+        var inserted = await ctx.Database
+            .SqlQueryRaw<int>("SELECT COUNT(*) AS [Value] FROM #mpc_results WHERE Act = 'INSERT'")
+            .SingleAsync(cancellationToken);
+
+        var updated = await ctx.Database
+            .SqlQueryRaw<int>("SELECT COUNT(*) AS [Value] FROM #mpc_results WHERE Act = 'UPDATE'")
+            .SingleAsync(cancellationToken);
 
         return (inserted, updated);
     }

@@ -1,7 +1,12 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using Sol.Api.Data;
 using Sol.Api.Models;
 using Sol.Api.Services;
 using System.Globalization;
+
+Console.SetOut(new TimestampedWriter(Console.Out));
+Console.SetError(new TimestampedWriter(Console.Error));
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -24,8 +29,12 @@ builder.Services.AddMemoryCache(options =>
 	// Keep total in-process cache bounded; entry sizes are set on write.
 	options.SizeLimit = 50_000_000; // approx 50 MB budget
 });
-builder.Services.AddSingleton<ISqlConnectionFactory, SqlConnectionFactory>();
-builder.Services.AddSingleton<ISqlWriteConnectionFactory, SqlWriteConnectionFactory>();
+builder.Services.AddDbContextFactory<SolReadDbContext>(opts =>
+    opts.UseSqlServer(builder.Configuration.GetConnectionString("EphemerisDb")
+        ?? throw new InvalidOperationException("Missing connection string 'EphemerisDb'.")));
+builder.Services.AddDbContextFactory<SolWriteDbContext>(opts =>
+    opts.UseSqlServer(builder.Configuration.GetConnectionString("EphemerisDbWrite")
+        ?? throw new InvalidOperationException("Missing connection string 'EphemerisDbWrite'.")));
 builder.Services.AddScoped<IEphemerisRepository, SqlServerEphemerisRepository>();
 builder.Services.AddHttpClient<IAuthoritativeBodyCatalogReader, AuthoritativeBodyCatalogReader>();
 builder.Services.AddHttpClient<IEphemerisSampleImporter, HorizonsEphemerisSampleImporter>();
@@ -33,6 +42,7 @@ builder.Services.AddScoped<IBodyCatalogImporter, SqlBodyCatalogImporter>();
 builder.Services.AddHttpClient<MpcorbImporter>();
 
 builder.Logging.AddFilter("System.Net.Http.HttpClient", LogLevel.None);
+builder.Logging.AddFilter("Microsoft.EntityFrameworkCore", LogLevel.Warning);
 
 var app = builder.Build();
 
@@ -78,17 +88,17 @@ if (args.Length > 0 && string.Equals(args[0], "import-samples", StringComparison
 	var namedArgs      = args.Skip(1).Where(a => a.StartsWith("--", StringComparison.Ordinal)).ToArray();
 	var positionalArgs = args.Skip(1).Where(a => !a.StartsWith("--", StringComparison.Ordinal)).ToArray();
 
-	var skipSync    = namedArgs.Any(a => string.Equals(a, "--skip-sync", StringComparison.OrdinalIgnoreCase));
+	var syncCatalog = namedArgs.Any(a => string.Equals(a, "--sync-catalog", StringComparison.OrdinalIgnoreCase));
 	var bodiesArg   = namedArgs.FirstOrDefault(a => a.StartsWith("--bodies=",   StringComparison.OrdinalIgnoreCase));
 	var bodyIdsArg  = namedArgs.FirstOrDefault(a => a.StartsWith("--bodyIds=",  StringComparison.OrdinalIgnoreCase));
 
 	var unknownArgs = namedArgs.Where(a =>
-		!string.Equals(a, "--skip-sync", StringComparison.OrdinalIgnoreCase) &&
+		!string.Equals(a, "--sync-catalog", StringComparison.OrdinalIgnoreCase) &&
 		!a.StartsWith("--bodies=",  StringComparison.OrdinalIgnoreCase) &&
 		!a.StartsWith("--bodyIds=", StringComparison.OrdinalIgnoreCase)).ToArray();
 	if (unknownArgs.Length > 0) {
 		Console.Error.WriteLine($"Unknown argument(s): {string.Join(", ", unknownArgs)}");
-		Console.Error.WriteLine("Usage: import-samples [--skip-sync] [--bodies=slug1,slug2] [--bodyIds=1,2,3] [h_max] [startUtc] [endUtc] [step]");
+		Console.Error.WriteLine("Usage: import-samples [--sync-catalog] [--bodies=slug1,slug2] [--bodyIds=1,2,3] [h_max] [startUtc] [endUtc] [step]");
 		return;
 	}
 	IReadOnlyList<string>? slugFilter = bodiesArg is not null
@@ -111,7 +121,7 @@ if (args.Length > 0 && string.Equals(args[0], "import-samples", StringComparison
 	var sampleRate     = pIdx < positionalArgs.Length ? ParseSampleRate(positionalArgs[pIdx])   : null;
 
 	using var scope = app.Services.CreateScope();
-	if (!skipSync) {
+	if (syncCatalog) {
 		var bodyImporter = scope.ServiceProvider.GetRequiredService<IBodyCatalogImporter>();
 		var bodyImportResult = await bodyImporter.ImportAsync(CancellationToken.None);
 		Console.WriteLine($"Body catalog synced. Inserted: {bodyImportResult.Inserted}, Updated: {bodyImportResult.Updated}, Total: {bodyImportResult.Total}.");
@@ -340,3 +350,12 @@ static TimeSpan? ParseSampleRate(string value)
 
 sealed record ValidatedRange(int Limit);
 sealed record RangeValidationResult(ValidatedRange? Range, IResult? Error);
+
+sealed class TimestampedWriter(TextWriter inner) : TextWriter
+{
+    public override System.Text.Encoding Encoding => inner.Encoding;
+    public override void WriteLine(string? value) => inner.WriteLine($"[{DateTime.Now:HH:mm:ss}] {value}");
+    public override void WriteLine()              => inner.WriteLine($"[{DateTime.Now:HH:mm:ss}]");
+    public override void Write(char value)        => inner.Write(value);
+    public override void Write(string? value)     => inner.Write(value);
+}
