@@ -1,4 +1,4 @@
-# Solar System Simulator
+# SOL - Solar System Simulator
 
 A browser-based 3D solar system and deep-time space visualizer built with Three.js. It combines planetary orbits, present-day Earth and Moon time calibration, dwarf planets, comets, a full fleet of space probes, responsive desktop/mobile controls, and a cinematic intro overlay into a single self-contained project.
 
@@ -43,15 +43,6 @@ Project layout (representative):
 │   └── three.min.js
 ├── textures/
 │   └── ...
-├── trajectory/
-│   ├── Voyager1-Jupiter.txt
-│   ├── Voyager1-Saturn.txt
-│   ├── Voyager1.txt
-│   ├── Voyager2-Jupiter.txt
-│   ├── Voyager2-Neptune.txt
-│   ├── Voyager2-Saturn.txt
-│   ├── Voyager2-Uranus.txt
-│   └── Voyager2.txt
 ├── CHANGELOG.md
 └── README.md
 ```
