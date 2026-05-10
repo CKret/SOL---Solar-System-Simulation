@@ -1807,17 +1807,21 @@ self.onmessage=function(e){
   }
   // tiltGroup applies axial tilt in solarPivot local space so it stays locked to the ecliptic.
   const tiltGroup = new THREE.Group();
-  const _oblDeg = { MERCURY:7.04, VENUS:177.36, EARTH:23.44, MARS:25.19,
-                    JUPITER:3.13, SATURN:26.73, URANUS:97.77, NEPTUNE:28.32 }[d.name];
-  const _lonDeg  = { MERCURY:280.0, VENUS:272.8, EARTH:90.0, MARS:352.9,
-                    JUPITER:336.0, SATURN:40.6, URANUS:257.3, NEPTUNE:299.4 }[d.name];
-  if (_oblDeg !== undefined) {
-    const obl = THREE.MathUtils.degToRad(_oblDeg);
-    const lon = THREE.MathUtils.degToRad(_lonDeg);
-    // Pole in ecliptic coords: (sin(obl)*cos(lon), sin(obl)*sin(lon), cos(obl))
-    const ecl_x = Math.sin(obl) * Math.cos(lon);
-    const ecl_y = Math.sin(obl) * Math.sin(lon);
-    const ecl_z = Math.cos(obl);
+  // IAU WGCCRE J2000 pole RA/Dec (equatorial) → ecliptic J2000 → scene coords
+  const _iauRA  = { MERCURY:281.01, VENUS:272.76, EARTH:  0.00, MARS:317.68,
+                    JUPITER:268.06, SATURN: 40.59, URANUS:257.31, NEPTUNE:299.36 }[d.name];
+  const _iauDec = { MERCURY: 61.42, VENUS: 67.16, EARTH: 90.00, MARS: 52.89,
+                    JUPITER: 64.50, SATURN: 83.54, URANUS: -15.18, NEPTUNE: 43.46 }[d.name];
+  if (_iauRA !== undefined) {
+    const ra  = THREE.MathUtils.degToRad(_iauRA);
+    const dec = THREE.MathUtils.degToRad(_iauDec);
+    const eps = THREE.MathUtils.degToRad(23.4392911); // J2000 obliquity, equatorial→ecliptic
+    const eq_x = Math.cos(dec) * Math.cos(ra);
+    const eq_y = Math.cos(dec) * Math.sin(ra);
+    const eq_z = Math.sin(dec);
+    const ecl_x =  eq_x;
+    const ecl_y =  eq_y * Math.cos(eps) + eq_z * Math.sin(eps);
+    const ecl_z = -eq_y * Math.sin(eps) + eq_z * Math.cos(eps);
     const target = new THREE.Vector3(ecl_x, ecl_z, -ecl_y).normalize();
     const from = new THREE.Vector3(0, 1, 0);
     const rotAxis = new THREE.Vector3().crossVectors(from, target);
@@ -3174,10 +3178,108 @@ for (const vd of VOYAGER_DATA) {
   });
 }
 
+// ── Ephemeris-driven probes (DB ephemeris, not hardcoded trajectories) ───────
+const EPHEMERIS_PROBE_TRAIL_PTS = 1001;
+const EPHEMERIS_PROBE_CATALOG = [
+  { slug:'cassini',           name:'Cassini',            launchYear:1997.79, color:0xFFCC88,
+    info:{ launch:'Oct 15, 1997', status:'Saturn orbit (ended Sep 2017)', note:'Huygens Titan lander; grand finale ring dive' } },
+  { slug:'pioneer-10',        name:'Pioneer 10',         launchYear:1972.17, color:0xAAFFAA,
+    info:{ launch:'Mar 2, 1972',  status:'Beyond solar system',           note:'First through asteroid belt; first Jupiter flyby' } },
+  { slug:'pioneer-11',        name:'Pioneer 11',         launchYear:1973.26, color:0x88FFCC,
+    info:{ launch:'Apr 5, 1973',  status:'Beyond solar system',           note:'First Saturn flyby' } },
+  { slug:'new-horizons',      name:'New Horizons',       launchYear:2006.05, color:0xCCCCFF,
+    info:{ launch:'Jan 19, 2006', status:'Kuiper Belt',                   note:'First Pluto flyby (Jul 2015); Arrokoth flyby (Jan 2019)' } },
+  { slug:'juno',              name:'Juno',               launchYear:2011.59, color:0xFFFF88,
+    info:{ launch:'Aug 5, 2011',  status:'Jupiter orbit',                 note:'Polar orbiter mapping Jupiter interior' } },
+  { slug:'parker-solar-probe',name:'Parker Solar Probe', launchYear:2018.61, color:0xFF8844,
+    info:{ launch:'Aug 12, 2018', status:'Solar orbit',                   note:'Closest solar approach in history (Dec 2024)' } },
+  { slug:'bepicolombo',       name:'BepiColombo',        launchYear:2018.80, color:0xDDAAFF,
+    info:{ launch:'Oct 20, 2018', status:'En route to Mercury',           note:'ESA/JAXA joint Mercury orbiter mission' } },
+  { slug:'galileo',           name:'Galileo',            launchYear:1989.80, color:0xFFAACC,
+    info:{ launch:'Oct 18, 1989', status:'Jupiter orbit (ended Sep 2003)', note:'Witnessed SL9 impacts; discovered Io volcanism' } },
+  { slug:'messenger',         name:'MESSENGER',          launchYear:2004.59, color:0xFFDD88,
+    info:{ launch:'Aug 3, 2004',  status:'Mercury orbit (ended Apr 2015)', note:'First Mercury orbiter' } },
+  { slug:'dawn',              name:'Dawn',               launchYear:2007.74, color:0x88DDFF,
+    info:{ launch:'Sep 27, 2007', status:'Ceres orbit (ended Nov 2018)',   note:'Only spacecraft to orbit two extraterrestrial bodies' } },
+  { slug:'rosetta',           name:'Rosetta',            launchYear:2004.17, color:0xCCFF88,
+    info:{ launch:'Mar 2, 2004',  status:'67P orbit (ended Sep 2016)',     note:'Deployed Philae lander on comet 67P' } },
+  { slug:'osiris-rex',        name:'OSIRIS-REx',         launchYear:2016.69, color:0xFFCCAA,
+    info:{ launch:'Sep 8, 2016',  status:'Sample return (Bennu)',          note:'Returned Bennu samples Sep 2023; now OSIRIS-APEX' } },
+];
+
+for (const pd of EPHEMERIS_PROBE_CATALOG) {
+  const vd = { ...pd, ephemerisDriven: true, bodyId: null };
+  const mesh = makeSpacecraftMesh(vd.color);
+  mesh.scale.setScalar(PROBE_BASE_SCALE);
+  const hitTarget = new THREE.Mesh(
+    new THREE.SphereGeometry(PROBE_VISUAL_RADIUS, 8, 8),
+    new THREE.MeshBasicMaterial({ transparent:true, opacity:0, depthWrite:false })
+  );
+  mesh.add(hitTarget);
+  solarPivot.add(mesh);
+
+  const trailGeo = new THREE.BufferGeometry();
+  const trailPos = new Float32Array(EPHEMERIS_PROBE_TRAIL_PTS * 3);
+  const trailCol = new Float32Array(EPHEMERIS_PROBE_TRAIL_PTS * 3);
+  trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+  trailGeo.setAttribute('color',    new THREE.BufferAttribute(trailCol, 3));
+  trailGeo.setDrawRange(0, 0);
+  const trailMat = new THREE.LineBasicMaterial({ vertexColors:true, transparent:true, opacity:0.95, depthWrite:false });
+  const trailLine = new THREE.Line(trailGeo, trailMat);
+  trailLine.frustumCulled = false;
+  scene.add(trailLine);
+
+  const dotGeo = new THREE.BufferGeometry();
+  const dotPos = new Float32Array(EPHEMERIS_PROBE_TRAIL_PTS * 3);
+  const dotCol = new Float32Array(EPHEMERIS_PROBE_TRAIL_PTS * 3);
+  const dotSiz = new Float32Array(EPHEMERIS_PROBE_TRAIL_PTS);
+  dotGeo.setAttribute('position', new THREE.BufferAttribute(dotPos, 3));
+  dotGeo.setAttribute('color',    new THREE.BufferAttribute(dotCol, 3));
+  dotGeo.setAttribute('size',     new THREE.BufferAttribute(dotSiz, 1));
+  dotGeo.setDrawRange(0, 0);
+  const dotLine = new THREE.Points(dotGeo, trailPointMat.clone());
+  dotLine.frustumCulled = false;
+  scene.add(dotLine);
+
+  const glowGeo = new THREE.BufferGeometry();
+  const glowPos = new Float32Array(3);
+  const glowCol = new Float32Array([1, 1, 1]);
+  const glowSiz = new Float32Array([PROBE_GLOW_SIZE]);
+  glowGeo.setAttribute('position', new THREE.BufferAttribute(glowPos, 3));
+  glowGeo.setAttribute('color',    new THREE.BufferAttribute(glowCol, 3));
+  glowGeo.setAttribute('size',     new THREE.BufferAttribute(glowSiz, 1));
+  const glowPt = new THREE.Points(glowGeo, trailPointMat.clone());
+  glowPt.frustumCulled = false;
+  scene.add(glowPt);
+
+  const focusReticle = makeProbeFocusReticle(vd.color);
+
+  probes.push({
+    vd, mesh, trailGeo, trailPos, trailCol, trailLine,
+    dotGeo, dotPos, dotCol, dotSiz, dotLine,
+    glowGeo, glowPos, glowPt, glowSiz, focusReticle,
+    PROBE_TRAIL_PTS: EPHEMERIS_PROBE_TRAIL_PTS,
+    hitTarget,
+    visualRadius: PROBE_VISUAL_RADIUS,
+    symbolicFocusRadius: PROBE_SYMBOLIC_FOCUS_RADIUS,
+    realSizeSnapRadius: PROBE_REAL_SIZE_SNAP_RADIUS,
+    focusRadius: PROBE_FOCUS_RADIUS,
+    baseScale: PROBE_BASE_SCALE,
+    realSizeScale: getSceneRadiusFromDiameterKm(PROBE_DIAMETER_KM) / PROBE_VISUAL_RADIUS,
+  });
+}
+
 const _probePosCurrent = new THREE.Vector3();
 const _probePosNext = new THREE.Vector3();
 
 function getProbeScenePositionAtTime(probe, timeYears, out = new THREE.Vector3()) {
+  if (probe.vd.ephemerisDriven) {
+    const bodyId = probe.vd.bodyId;
+    if (bodyId == null) return null;
+    const pos = EphemerisSystem.getPosition(bodyId, timeYears);
+    if (!pos) return null;
+    return out.set(pos.x, pos.y, pos.z);
+  }
   const pos = getProbePos(probe.vd, 2000 + timeYears);
   return out.copy(pos);
 }
@@ -3198,15 +3300,23 @@ function updateProbes() {
 
     if (!launched) continue;
 
-    // Current position from ephemeris or anchored trajectory fallback
+    // Current position
     const pos = getProbeScenePositionAtTime(pr, simTime, _probePosCurrent);
+    if (!pos) {
+      pr.mesh.visible = pr.glowPt.visible = pr.trailLine.visible = pr.dotLine.visible = pr.focusReticle.visible = false;
+      pr.trailGeo.setDrawRange(0, 0);
+      pr.dotGeo.setDrawRange(0, 0);
+      continue;
+    }
     pr.mesh.position.copy(pos);
 
     // Orient toward direction of travel
     const nextSimTime = simTime + 0.5;
     const posNext = getProbeScenePositionAtTime(pr, nextSimTime, _probePosNext);
-    const dir = posNext.clone().sub(pos).normalize();
-    pr.mesh.lookAt(pos.clone().add(dir));
+    if (posNext) {
+      const dir = posNext.clone().sub(pos).normalize();
+      pr.mesh.lookAt(pos.clone().add(dir));
+    }
 
     // Scale mesh
     const scale = realSizeMode ? pr.realSizeScale : Math.max(2, Math.min(20, camR * 0.02));
@@ -3220,9 +3330,57 @@ function updateProbes() {
     pr.glowGeo.attributes.size.needsUpdate = true;
     if (pr.focusReticle.visible) {
       pr.focusReticle.position.copy(pos);
-      const reticleScale = THREE.MathUtils.clamp(camR * 0.7, 0.003, 0.05);
-      pr.focusReticle.scale.setScalar(reticleScale);
+      pr.focusReticle.scale.setScalar(camR * 0.015);
       pr.focusReticle.quaternion.copy(camera.quaternion);
+    }
+
+    // Trail
+    if (vd.ephemerisDriven) {
+      const bodyId = vd.bodyId;
+      const startSim = vd.launchYear - 2000;
+      const traj = bodyId != null
+        ? EphemerisSystem.getTrajectory(bodyId, startSim, simTime, Math.min(900, pr.PROBE_TRAIL_PTS - 2))
+        : null;
+      const cr = ((vd.color >> 16) & 0xff) / 255;
+      const cg = ((vd.color >> 8)  & 0xff) / 255;
+      const cb = ( vd.color        & 0xff) / 255;
+      if (!traj) {
+        pr.trailGeo.setDrawRange(0, 0);
+        pr.dotGeo.setDrawRange(0, 0);
+      } else {
+        const simSpan = Math.max(1e-9, simTime - startSim);
+        const DOT_STRIDE = 6;
+        let n = 0, nd = 0;
+        for (let i = 0; i < traj.length; i++) {
+          const pt = traj[i];
+          const t = (pt.jd - 2451545.0) / 365.25; // JD → simTime
+          const f = Math.max(0, Math.min(1, (t - startSim) / simSpan));
+          const fade = 0.08 + 0.92 * f;
+          pr.trailPos[n*3]=pt.x; pr.trailPos[n*3+1]=pt.y; pr.trailPos[n*3+2]=pt.z;
+          pr.trailCol[n*3]=cr*fade; pr.trailCol[n*3+1]=cg*fade; pr.trailCol[n*3+2]=cb*fade;
+          if (n % DOT_STRIDE === 0 && nd < pr.PROBE_TRAIL_PTS - 1) {
+            pr.dotPos[nd*3]=pt.x; pr.dotPos[nd*3+1]=pt.y; pr.dotPos[nd*3+2]=pt.z;
+            pr.dotCol[nd*3]=cr*fade; pr.dotCol[nd*3+1]=cg*fade; pr.dotCol[nd*3+2]=cb*fade;
+            pr.dotSiz[nd] = (0.4 + f * 0.8) * (realSizeMode ? PROBE_REAL_DOT_SIZE_SCALE : 1);
+            nd++;
+          }
+          n++;
+        }
+        // Tip at exact current position
+        if (n < pr.PROBE_TRAIL_PTS) {
+          pr.trailPos[n*3]=pos.x; pr.trailPos[n*3+1]=pos.y; pr.trailPos[n*3+2]=pos.z;
+          pr.trailCol[n*3]=cr; pr.trailCol[n*3+1]=cg; pr.trailCol[n*3+2]=cb;
+          n++;
+        }
+        pr.trailGeo.attributes.position.needsUpdate = true;
+        pr.trailGeo.attributes.color.needsUpdate = true;
+        pr.trailGeo.setDrawRange(0, n);
+        pr.dotGeo.attributes.position.needsUpdate = true;
+        pr.dotGeo.attributes.color.needsUpdate = true;
+        pr.dotGeo.attributes.size.needsUpdate = true;
+        pr.dotGeo.setDrawRange(0, nd);
+      }
+      continue;
     }
 
     // Trail — render directly from trajectory array for accurate flyby curves.
@@ -4010,8 +4168,8 @@ function aimCameraAtConstellation(group, options = {}) {
   camPhi = THREE.MathUtils.clamp(camPhi, 1e-3, Math.PI * 2 - 1e-3);
   targetPhi = camPhi;
   cameraRoll = 0;
-  lookAtSun = false;
-  btnLookAtSun.classList.remove('active');
+  lookAtBodyMesh = null;
+  selLookAt.value = '';
 }
 
 function focusConstellationFromSearch(group, options = {}) {
@@ -4151,13 +4309,14 @@ function setFocus(name) {
     b.classList.toggle('active', b.dataset.focus === name);
   });
   syncFocusSelectValue(name === 'sun' ? 'sun' : (name ? `planet:${name}` : ''));
-  // Clear pan offset and trigger transition lerp
-  userPanOffset.set(0, 0, 0);
+  // Clear pan offsets and trigger transition lerp
+  clearPanOffsets();
   focusTransitioning = true;
   document.getElementById('btn-orion').classList.remove('active');
-  lookAtSun = false;
-  btnLookAtSun.classList.remove('active');
+  lookAtBodyMesh = null;
+  selLookAt.value = '';
   targetR = getFocusTargetRadius(focusMesh);
+  camR = targetR;
   closeMobilePanels();
 }
 
@@ -4177,11 +4336,12 @@ document.querySelectorAll('.fbtn[data-focus-dwarf]').forEach(b => {
     geoLock = false;
     btnGeoLock.classList.remove('active');
     focusMesh = dw.mesh;
-    userPanOffset.set(0,0,0);
+    clearPanOffsets();
     targetR = getFocusTargetRadius(focusMesh);
+    camR = targetR;
     focusTransitioning = true;
-    lookAtSun = false;
-    btnLookAtSun.classList.remove('active');
+    lookAtBodyMesh = null;
+    selLookAt.value = '';
     showInfo('dwarf', dw);
     closeMobilePanels();
   });
@@ -4199,11 +4359,12 @@ document.querySelectorAll('.fbtn[data-focus-comet]').forEach(b => {
     geoLock = false;
     btnGeoLock.classList.remove('active');
     focusMesh = cm.nucleus;
-    userPanOffset.set(0,0,0);
+    clearPanOffsets();
     targetR = getFocusTargetRadius(focusMesh);
+    camR = targetR;
     focusTransitioning = true;
-    lookAtSun = false;
-    btnLookAtSun.classList.remove('active');
+    lookAtBodyMesh = null;
+    selLookAt.value = '';
     showInfo('comet', cm);
     closeMobilePanels();
   });
@@ -4221,32 +4382,33 @@ document.querySelectorAll('.fbtn[data-focus-probe]').forEach(b => {
     geoLock = false;
     btnGeoLock.classList.remove('active');
     focusMesh = pr.mesh;
-    userPanOffset.set(0,0,0);
+    clearPanOffsets();
     targetR = getFocusTargetRadius(focusMesh);
+    camR = targetR;
     focusTransitioning = true;
-    lookAtSun = false;
-    btnLookAtSun.classList.remove('active');
+    lookAtBodyMesh = null;
+    selLookAt.value = '';
     showInfo('probe', pr);
     closeMobilePanels();
   });
 });
 
-// Look-at-Sun toggle — only meaningful when focused on a planet
-let lookAtSun = false;
-const btnLookAtSun = document.getElementById('btn-lookat-sun');
-btnLookAtSun.classList.remove('active');
-btnLookAtSun.addEventListener('click', () => {
-  if (lookAtSun) {
-    lookAtSun = false;
-    btnLookAtSun.classList.remove('active');
+// Look-at-body — camera orbit plane locks so focused body is between camera and target body
+let lookAtBodyMesh = null;
+const selLookAt = document.getElementById('select-lookat');
+selLookAt.value = '';
+selLookAt.addEventListener('change', () => {
+  const val = selLookAt.value;
+  if (!val) {
+    lookAtBodyMesh = null;
+  } else if (val === 'sun') {
+    lookAtBodyMesh = sunMesh;
+    if (focusMesh) { camTheta = 0; camPhi = Math.PI / 2; targetPhi = camPhi; }
   } else {
-    lookAtSun = true;
-    btnLookAtSun.classList.add('active');
-    if (focusMesh) {
-      camTheta  = 0;
-      camPhi    = Math.PI / 2;
-      targetPhi = camPhi;
-    }
+    const planet = planets.find(p => p.d.name.toLowerCase() === val);
+    lookAtBodyMesh = planet ? planet.mesh : null;
+    if (!lookAtBodyMesh) selLookAt.value = '';
+    if (lookAtBodyMesh && focusMesh) { camTheta = 0; camPhi = Math.PI / 2; targetPhi = camPhi; }
   }
 });
 
@@ -4285,36 +4447,36 @@ function rotateFocusedView(dx, dy) {
   document.getElementById('btn-orion').classList.remove('active');
   if (geoLock && focusMesh) {
     rotateGeoLockView(dx, dy);
-  } else if (lookAtSun && focusMesh) {
+  } else if (lookAtBodyMesh && focusMesh) {
     camTheta += dx * 0.005;
     camPhi   += dy * 0.005;
     targetPhi = camPhi;
   } else if (focusMesh) {
     // Focused orbit around an object — drag direction orbits the camera
-    if (lookAtSun) {
+    if (lookAtBodyMesh) {
       const diff = camera.position.clone().sub(camTarget);
       camR     = diff.length();
       targetR  = camR;
       camPhi   = Math.acos(Math.max(-1, Math.min(1, diff.y / camR)));
       camTheta = Math.atan2(diff.x, diff.z);
       targetPhi = camPhi;
-      lookAtSun = false;
-      btnLookAtSun.classList.remove('active');
+      lookAtBodyMesh = null;
+      selLookAt.value = '';
     }
     camTheta -= dx * 0.005;
     camPhi   -= dy * 0.005;
     targetPhi = camPhi;
   } else {
     // Free mode — no focused object; drag rotates the scene naturally
-    if (lookAtSun) {
+    if (lookAtBodyMesh) {
       const diff = camera.position.clone().sub(camTarget);
       camR     = diff.length();
       targetR  = camR;
       camPhi   = Math.acos(Math.max(-1, Math.min(1, diff.y / camR)));
       camTheta = Math.atan2(diff.x, diff.z);
       targetPhi = camPhi;
-      lookAtSun = false;
-      btnLookAtSun.classList.remove('active');
+      lookAtBodyMesh = null;
+      selLookAt.value = '';
     }
     camTheta -= dx * 0.005;
     camPhi   -= dy * 0.005;
@@ -4338,12 +4500,21 @@ btnGeoLock.addEventListener('click', () => {
   }
 });
 
-let dragging=false, rDragging=false, prevX=0, prevY=0;
-// panDelta accumulates user pan offset in view space
-const userPanOffset = new THREE.Vector3(0,0,0);
+let dragging=false, rDragging=false, mDragging=false, prevX=0, prevY=0;
+// userPanOffset: free-camera pan (no focused object)
+// focusPanOffset: offsets the view center away from the focused object (middle-drag pan)
+const userPanOffset  = new THREE.Vector3(0,0,0);
+const focusPanOffset = new THREE.Vector3(0,0,0);
 const _mousePanRight = new THREE.Vector3();
-const _mousePanView = new THREE.Vector3();
+const _mousePanView  = new THREE.Vector3();
+const _panCamRight   = new THREE.Vector3();
+const _panCamUp      = new THREE.Vector3();
 const _worldUp = new THREE.Vector3(0, 1, 0);
+
+function clearPanOffsets() {
+  userPanOffset.set(0,0,0);
+  focusPanOffset.set(0,0,0);
+}
 
 let mouseDragDist = 0;
 function clearBrowserTextSelection() {
@@ -4357,6 +4528,7 @@ function setSceneDragSelectionSuppressed(suppressed) {
 }
 renderer.domElement.addEventListener('mousedown', e=>{
   if(e.button===0)dragging=true;
+  if(e.button===1){mDragging=true;}
   if(e.button===2)rDragging=true;
   prevX=e.clientX; prevY=e.clientY;
   mouseDragDist = 0;
@@ -4364,10 +4536,13 @@ renderer.domElement.addEventListener('mousedown', e=>{
   setSceneDragSelectionSuppressed(true);
 });
 renderer.domElement.addEventListener('contextmenu', e=>e.preventDefault());
+// Suppress browser autoscroll cursor triggered by middle-click
+renderer.domElement.addEventListener('auxclick', e=>{ if(e.button===1) e.preventDefault(); });
 window.addEventListener('mouseup', ()=>{
-  const wasDragging = dragging || rDragging;
+  const wasDragging = dragging || rDragging || mDragging;
   dragging=false;
   rDragging=false;
+  mDragging=false;
   setSceneDragSelectionSuppressed(false);
   // Only clear text selection after actual canvas drags — calling removeAllRanges()
   // unconditionally fires a real blur on focused inputs in Chrome, breaking the search box.
@@ -4396,12 +4571,25 @@ window.addEventListener('mousemove', e=>{
       userPanOffset.addScaledVector(_worldUp,       dy*s);
     }
   }
+  if(mDragging){
+    // Middle-drag: pan the view center in camera screen space.
+    // Works in both focused and free modes — focused uses focusPanOffset,
+    // free uses userPanOffset so the two offsets stay independent.
+    _panCamRight.setFromMatrixColumn(camera.matrixWorld, 0);
+    _panCamUp.setFromMatrixColumn(camera.matrixWorld, 1);
+    const s = camR * 0.001;
+    if (focusMesh) {
+      focusPanOffset.addScaledVector(_panCamRight,  dx * s);
+      focusPanOffset.addScaledVector(_panCamUp,    -dy * s);
+    } else {
+      userPanOffset.addScaledVector(_panCamRight,  dx * s);
+      userPanOffset.addScaledVector(_panCamUp,    -dy * s);
+    }
+  }
   hoverCheck(e.clientX, e.clientY);
 });
 renderer.domElement.addEventListener('wheel', e=>{
-  // Minimum zoom: close enough to see the focused object clearly
-  const minR = focusMesh ? getMinFocusDistance(focusMesh, 1) : 8;
-  camR = Math.max(minR, Math.min(80000, camR*(1+e.deltaY*0.001)));
+  camR = Math.max(0.001, Math.min(2000000, camR*(1+e.deltaY*0.001)));
   targetR = camR;
 },{passive:true});
 
@@ -4432,8 +4620,7 @@ renderer.domElement.addEventListener('touchmove',e=>{
   if(e.touches.length===2){
     const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
     if(lastTD){
-      const minR = focusMesh ? getMinFocusDistance(focusMesh, 1) : 8;
-      camR=Math.max(minR,Math.min(80000,camR*(lastTD/d)));targetR=camR;
+      camR=Math.max(0.001,Math.min(2000000,camR*(lastTD/d))); targetR=camR;
     }
     lastTD=d;
   }
@@ -4483,12 +4670,25 @@ function getProbeInstantSpeedKmS(vd) {
   return speedAuPerYear * KM_S_PER_AU_PER_YEAR;
 }
 
+function getEphemerisProbeInstantSpeedKmS(bodyId) {
+  const dtYears = 1 / 365.25;
+  const p1 = EphemerisSystem.getPosition(bodyId, simTime - dtYears);
+  const p2 = EphemerisSystem.getPosition(bodyId, simTime + dtYears);
+  if (!p1 || !p2) return null;
+  const dx = p2.x - p1.x, dy = p2.y - p1.y, dz = p2.z - p1.z;
+  const speedAuPerYear = Math.sqrt(dx*dx + dy*dy + dz*dz) / AU_SCENE / (2 * dtYears);
+  return speedAuPerYear * KM_S_PER_AU_PER_YEAR;
+}
+
 function getInfoVelocity(type, obj) {
   if (type === 'sun') return formatSpeedKmS(SUN_GALACTIC_SPEED_KMS);
   if (type === 'planet') return formatSpeedKmS(getHeliocentricSpeedKmS(obj.d.sma, obj.tiltGroup.position.length()));
   if (type === 'dwarf') return formatSpeedKmS(getHeliocentricSpeedKmS(obj.d.sma, obj.mesh.position.length()));
   if (type === 'comet') return formatSpeedKmS(getHeliocentricSpeedKmS(obj.cd.sma, obj.nucleus.position.length()));
-  if (type === 'probe') return formatSpeedKmS(getProbeInstantSpeedKmS(obj.vd));
+  if (type === 'probe') {
+    if (obj.vd.ephemerisDriven) return formatSpeedKmS(getEphemerisProbeInstantSpeedKmS(obj.vd.bodyId));
+    return formatSpeedKmS(getProbeInstantSpeedKmS(obj.vd));
+  }
   return 'N/A';
 }
 
@@ -4661,10 +4861,16 @@ function renderInfoContent(type, obj) {
     set('pi-year',obj.cd.period<1000?obj.cd.period.toFixed(1)+' yrs':(obj.cd.period/1000).toFixed(1)+'k yrs');
     set('pi-moons',obj.cd.inc.toFixed(1)+'°'); set('pi-vel',getInfoVelocity(type, obj)); set('pi-type','Comet');
   } else if (type==='probe') {
-    const distAU = (getProbePos(obj.vd, 2000+simTime).length()/AU_SCENE).toFixed(1);
+    let distAU;
+    if (obj.vd.ephemerisDriven) {
+      const pos = obj.vd.bodyId != null ? EphemerisSystem.getPosition(obj.vd.bodyId, simTime) : null;
+      distAU = pos ? (Math.sqrt(pos.x*pos.x+pos.y*pos.y+pos.z*pos.z)/AU_SCENE).toFixed(1) : '?';
+    } else {
+      distAU = (getProbePos(obj.vd, 2000+simTime).length()/AU_SCENE).toFixed(1);
+    }
     lbl('LAUNCHED','DISTANCE','SPEED','STATUS','CURRENT SPEED','TYPE');
     set('pi-name',obj.vd.name); set('pi-diam',obj.vd.info.launch);
-    set('pi-dist',distAU+' AU from Sun'); set('pi-year',obj.vd.info.speed);
+    set('pi-dist',distAU+' AU from Sun'); set('pi-year',obj.vd.info.speed ?? '');
     set('pi-moons',obj.vd.info.status); set('pi-vel',getInfoVelocity(type, obj)); set('pi-type',obj.vd.info.note);
   }
 }
@@ -4690,11 +4896,11 @@ function clearFocusSelection() {
   focusedInfoType = null;
   focusedInfoObj = null;
   targetR = VIEW_DEFAULTS[viewMode].r;
-  userPanOffset.set(0,0,0);
+  clearPanOffsets();
   geoLock = false;
   btnGeoLock.classList.remove('active');
-  lookAtSun = false;
-  btnLookAtSun.classList.remove('active');
+  lookAtBodyMesh = null;
+  selLookAt.value = '';
   document.querySelectorAll('.fbtn').forEach(b=>b.classList.remove('active'));
   syncFocusSelectValue('');
   infoPanelDismissed = false;
@@ -4917,10 +5123,10 @@ renderer.domElement.addEventListener('click',e=>{
     } else if(mn){
       geoLock = false;
       btnGeoLock.classList.remove('active');
-      focusMesh=mn.moonMesh; userPanOffset.set(0,0,0); targetR=getFocusTargetRadius(focusMesh);
+      focusMesh=mn.moonMesh; clearPanOffsets(); targetR=getFocusTargetRadius(focusMesh); camR=targetR;
       focusTransitioning = true;
-      lookAtSun = false;
-      btnLookAtSun.classList.remove('active');
+      lookAtBodyMesh = null;
+      selLookAt.value = '';
       document.querySelectorAll('.fbtn').forEach(b=>b.classList.remove('active'));
       showInfo('moon', mn);
     } else {
@@ -4929,19 +5135,19 @@ renderer.domElement.addEventListener('click',e=>{
       if(dw){
         geoLock = false;
         btnGeoLock.classList.remove('active');
-        focusMesh=dw.mesh; userPanOffset.set(0,0,0); targetR=getFocusTargetRadius(focusMesh);
+        focusMesh=dw.mesh; clearPanOffsets(); targetR=getFocusTargetRadius(focusMesh); camR=targetR;
         focusTransitioning = true;
-        lookAtSun = false;
-        btnLookAtSun.classList.remove('active');
+        lookAtBodyMesh = null;
+        selLookAt.value = '';
         document.querySelectorAll('.fbtn').forEach(b=>b.classList.remove('active'));
         showInfo('dwarf', dw);
       } else if(cm){
         geoLock = false;
         btnGeoLock.classList.remove('active');
-        focusMesh=cm.nucleus; userPanOffset.set(0,0,0); targetR=getFocusTargetRadius(focusMesh);
+        focusMesh=cm.nucleus; clearPanOffsets(); targetR=getFocusTargetRadius(focusMesh); camR=targetR;
         focusTransitioning = true;
-        lookAtSun = false;
-        btnLookAtSun.classList.remove('active');
+        lookAtBodyMesh = null;
+        selLookAt.value = '';
         document.querySelectorAll('.fbtn').forEach(b=>b.classList.remove('active'));
         showInfo('comet', cm);
       } else {
@@ -4949,10 +5155,10 @@ renderer.domElement.addEventListener('click',e=>{
         if(pr){
           geoLock = false;
           btnGeoLock.classList.remove('active');
-          focusMesh=pr.mesh; userPanOffset.set(0,0,0); targetR=getFocusTargetRadius(focusMesh);
+          focusMesh=pr.mesh; clearPanOffsets(); targetR=getFocusTargetRadius(focusMesh); camR=targetR;
           focusTransitioning = true;
-          lookAtSun = false;
-          btnLookAtSun.classList.remove('active');
+          lookAtBodyMesh = null;
+          selLookAt.value = '';
           document.querySelectorAll('.fbtn').forEach(b=>b.classList.remove('active'));
           showInfo('probe', pr);
         }
@@ -5731,20 +5937,14 @@ function animate(){
         p.cloudMesh.userData.cloudMeshB.rotation.y = p.cloudMesh.rotation.y;
       }
     }
-    // Fade planet when a probe passes close (so trajectory is visible through it)
-    let nearProbe = false;
-    const fadeDistSq = (p.d.r * 3) * (p.d.r * 3);
-    for (const pr of probes) {
-      if (pr.mesh.position.distanceToSquared(p.tiltGroup.position) < fadeDistSq) { nearProbe = true; break; }
-    }
     if (p.mesh.material.isShaderMaterial) {
-      p.mesh.material.uniforms.opacity.value = nearProbe ? 0.35 : 1.0;
-    } else {
-      if (p.mesh.material.transparent !== nearProbe) {
-        p.mesh.material.transparent = nearProbe;
-        p.mesh.material.needsUpdate = true;
+      if (p.mesh.material.uniforms.opacity.value !== 1.0) {
+        p.mesh.material.uniforms.opacity.value = 1.0;
       }
-      p.mesh.material.opacity = nearProbe ? 0.35 : 1.0;
+    } else if (p.mesh.material.opacity !== 1.0) {
+      p.mesh.material.opacity = 1.0;
+      p.mesh.material.transparent = false;
+      p.mesh.material.needsUpdate = true;
     }
     p.orbitLine.material.color.setHex(getOrbitLineColorHex(p));
     p.orbitLine.visible = orbitsOn && (viewMode==='solar');
@@ -5852,8 +6052,10 @@ function animate(){
   camPhi += (targetPhi - camPhi)*0.05;
   camR   += (targetR   - camR  )*0.05;
 
+
   if (focusMesh) {
     focusMesh.getWorldPosition(camTarget);
+    camTarget.add(focusPanOffset);
   } else if (viewMode === 'solar') {
     camTarget.copy(userPanOffset);
   } else if (viewMode === 'vortex') {
@@ -5873,39 +6075,44 @@ function animate(){
       .add(_wpos);
     _lockedCameraPos.multiplyScalar(camR).add(_wpos);
     _lockedWorldUp.copy(geoLockLocalUp).applyQuaternion(_focusWorldQuat).normalize();
+    // Translate the whole rig so the body drifts off-center, same as non-geoLock pan
+    _lockedCameraPos.add(focusPanOffset);
+    _lockedTargetPos.add(focusPanOffset);
     camTarget.copy(_lockedTargetPos);
     camera.position.copy(_lockedCameraPos);
     camera.up.copy(_lockedWorldUp);
     camera.lookAt(_lockedTargetPos);
-  } else if (lookAtSun && focusMesh) {
-    sunMesh.getWorldPosition(_wpos);
-    const sunPos = _wpos;
-    const planetPos = camTarget;
+  } else if (lookAtBodyMesh && focusMesh) {
+    // Camera is anchored near the focused body and faces the look-at body directly.
+    // The focused body acts as the camera's anchor; the look-at body is what fills the view.
+    focusMesh.getWorldPosition(_wpos);
+    _wpos.add(focusPanOffset);
+    camTarget.copy(_wpos);
 
-    // Direction from Sun to planet (the "behind planet" axis)
-    _camAway.subVectors(planetPos, sunPos).normalize();
+    lookAtBodyMesh.getWorldPosition(_lockedTargetPos);  // look-at body world position
 
-    // Build perpendicular axes for camera orbit around the planet
+    // Direction from focused body toward look-at body
+    _camAway.subVectors(_lockedTargetPos, _wpos).normalize();
+
     _camRight.crossVectors(_camAway, _worldUp);
     if (_camRight.lengthSq() < 1e-8) _camRight.set(1, 0, 0);
     else _camRight.normalize();
 
-    // Compute camera offset using camPhi/camTheta
     const sinPhi = Math.sin(camPhi - Math.PI/2);
     const cosPhi = Math.cos(camPhi - Math.PI/2);
+    // Camera sits behind the focused body (negative _camAway) so look-at body is in front
     _camOffset.set(0, 0, 0)
-      .addScaledVector(_camAway,  cosPhi * Math.cos(camTheta))
-      .addScaledVector(_camRight, cosPhi * Math.sin(camTheta))
-      .addScaledVector(_worldUp,  sinPhi)
+      .addScaledVector(_camAway, -cosPhi * Math.cos(camTheta))
+      .addScaledVector(_camRight,  cosPhi * Math.sin(camTheta))
+      .addScaledVector(_worldUp,   sinPhi)
       .normalize()
       .multiplyScalar(camR);
 
-    camera.position.copy(planetPos).add(_camOffset);
-    // Flip up vector when past the pole so lookAt wraps cleanly (same logic as normal mode)
+    camera.position.copy(_wpos).add(_camOffset);
     camera.up.set(0, cosPhi >= 0 ? 1 : -1, 0);
-    _camLookDir.subVectors(planetPos, camera.position).normalize();
+    _camLookDir.subVectors(_lockedTargetPos, camera.position).normalize();
     camera.up.applyAxisAngle(_camLookDir, cameraRoll);
-    camera.lookAt(planetPos);
+    camera.lookAt(_lockedTargetPos);
   } else {
     camera.position.set(
       camR*Math.sin(camPhi)*Math.sin(camTheta) + camTarget.x,
@@ -6206,7 +6413,9 @@ function slugify(name) {
     }
   }
   for (const pr of probes) {
-    pr.ephemerisBodyId = EphemerisSystem.bodyIdForSlug(slugify(pr.vd.name)) ?? null;
+    const slug = pr.vd.slug ?? slugify(pr.vd.name);
+    pr.ephemerisBodyId = EphemerisSystem.bodyIdForSlug(slug) ?? null;
+    if (pr.vd.ephemerisDriven) pr.vd.bodyId = pr.ephemerisBodyId;
   }
 
   // Kepler position provider: returns scene-space position for any wired body
@@ -6306,12 +6515,12 @@ function slugify(name) {
   function focusObject(type, obj) {
     document.querySelectorAll('.fbtn').forEach(x => x.classList.remove('active'));
     document.getElementById('btn-orion').classList.remove('active');
-    userPanOffset.set(0, 0, 0);
+    clearPanOffsets();
     geoLock = false;
     btnGeoLock.classList.remove('active');
     focusTransitioning = true;
-    lookAtSun = false;
-    btnLookAtSun.classList.remove('active');
+    lookAtBodyMesh = null;
+    selLookAt.value = '';
 
     if (type === 'sun') {
       focusMesh = sunMesh;
@@ -6343,7 +6552,20 @@ function slugify(name) {
       showInfo('probe', obj);
     }
 
+    camR = targetR;
     for (const c of comets) c.orbitLine.visible = isCometAvailableAtTime(c) && orbitsOn && (viewMode==='solar');
+  }
+
+  function focusByBodyId(bodyId) {
+    if (bodyId == null) return false;
+    const id = Number(bodyId);
+    if (!Number.isFinite(id)) return false;
+    for (const p of planets)  { if (p.ephemerisBodyId === id) { focusObject('planet', p); return true; } }
+    for (const d of dwarfs)   { if (d.ephemerisBodyId === id) { focusObject('dwarf',  d); return true; } }
+    for (const m of moons)    { if (m.ephemerisBodyId === id) { focusObject('moon',   m); return true; } }
+    for (const c of comets)   { if (c.ephemerisBodyId === id) { focusObject('comet',  c); return true; } }
+    for (const pr of probes)  { if (pr.ephemerisBodyId === id) { focusObject('probe', pr); return true; } }
+    return false;
   }
 
   function focusByName(name) {
@@ -6417,7 +6639,7 @@ function slugify(name) {
         color: '#86d2ff',
         group: 'EPHEMERIS BODIES',
         action: () => {
-          if (!focusByName(label)) {
+          if (!focusByBodyId(row.id) && !focusByName(label)) {
             input.value = label;
           }
         }
@@ -6614,7 +6836,8 @@ document.addEventListener('keydown', e => {
     toggleRealSizeMode();
   } else if (key === 'l') {
     e.preventDefault();
-    btnLookAtSun.click();
+    selLookAt.value = lookAtBodyMesh ? '' : 'sun';
+    selLookAt.dispatchEvent(new Event('change'));
   } else if (key === 'g') {
     e.preventDefault();
     btnGeoLock.click();

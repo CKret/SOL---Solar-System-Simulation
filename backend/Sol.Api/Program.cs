@@ -67,23 +67,58 @@ if (args.Length > 0 && string.Equals(args[0], "import-retry-zeros", StringCompar
 }
 
 if (args.Length > 0 && string.Equals(args[0], "import-samples", StringComparison.OrdinalIgnoreCase)) {
-	// import-samples [h_max] [startUtc] [endUtc] [step]
-	// h_max:    H magnitude cutoff — imports bodies where H <= h_max OR H IS NULL (authoritative bodies).
-	//           Omit to import all bodies with a stored Horizons range.
+	// import-samples [--bodies=slug1,slug2,...] [--bodyIds=1,2,3] [--skip-sync] [h_max] [startUtc] [endUtc] [step]
+	// --bodies:    comma-separated slug list; bypasses CompletedEphemeris filter for targeted dense imports.
+	// --bodyIds:   comma-separated body ID list; same bypass behaviour as --bodies.
+	// --skip-sync: skip the body catalog sync (saves a few minutes on targeted re-imports).
+	// h_max:       H magnitude cutoff — imports bodies where H <= h_max OR H IS NULL (authoritative bodies).
+	//              Omit (or omit with --bodies/--bodyIds) to import all bodies with a stored Horizons range.
 	// startUtc/endUtc: optional batch window; each body's range is clipped to its stored min/max.
-	// step:     sample rate override (e.g. "daily", "1h"). Defaults to 1 day.
-	var hMax       = args.Length > 1 && double.TryParse(args[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var h) ? h : (double?)null;
-	DateTime? startUtc = args.Length > 2 ? DateTime.Parse(args[2], CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal) : null;
-	DateTime? endUtc   = args.Length > 3 ? DateTime.Parse(args[3], CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal) : null;
-	var sampleRate     = args.Length > 4 ? ParseSampleRate(args[4]) : null;
+	// step:        sample rate override (e.g. "daily", "1h"). Defaults to 1 day.
+	var namedArgs      = args.Skip(1).Where(a => a.StartsWith("--", StringComparison.Ordinal)).ToArray();
+	var positionalArgs = args.Skip(1).Where(a => !a.StartsWith("--", StringComparison.Ordinal)).ToArray();
+
+	var skipSync    = namedArgs.Any(a => string.Equals(a, "--skip-sync", StringComparison.OrdinalIgnoreCase));
+	var bodiesArg   = namedArgs.FirstOrDefault(a => a.StartsWith("--bodies=",   StringComparison.OrdinalIgnoreCase));
+	var bodyIdsArg  = namedArgs.FirstOrDefault(a => a.StartsWith("--bodyIds=",  StringComparison.OrdinalIgnoreCase));
+
+	var unknownArgs = namedArgs.Where(a =>
+		!string.Equals(a, "--skip-sync", StringComparison.OrdinalIgnoreCase) &&
+		!a.StartsWith("--bodies=",  StringComparison.OrdinalIgnoreCase) &&
+		!a.StartsWith("--bodyIds=", StringComparison.OrdinalIgnoreCase)).ToArray();
+	if (unknownArgs.Length > 0) {
+		Console.Error.WriteLine($"Unknown argument(s): {string.Join(", ", unknownArgs)}");
+		Console.Error.WriteLine("Usage: import-samples [--skip-sync] [--bodies=slug1,slug2] [--bodyIds=1,2,3] [h_max] [startUtc] [endUtc] [step]");
+		return;
+	}
+	IReadOnlyList<string>? slugFilter = bodiesArg is not null
+		? bodiesArg["--bodies=".Length..].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+		: null;
+	IReadOnlyList<int>? bodyIdFilter = bodyIdsArg is not null
+		? bodyIdsArg["--bodyIds=".Length..].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+			.Select(int.Parse).ToArray()
+		: null;
+
+	// Cursor-based parsing: hMax only advances the cursor when it successfully parses as a number.
+	int pIdx = 0;
+	double? hMax = null;
+	if (pIdx < positionalArgs.Length && double.TryParse(positionalArgs[pIdx], NumberStyles.Float, CultureInfo.InvariantCulture, out var h)) {
+		hMax = h;
+		pIdx++;
+	}
+	DateTime? startUtc = pIdx < positionalArgs.Length ? DateTime.Parse(positionalArgs[pIdx++], CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal) : null;
+	DateTime? endUtc   = pIdx < positionalArgs.Length ? DateTime.Parse(positionalArgs[pIdx++], CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal) : null;
+	var sampleRate     = pIdx < positionalArgs.Length ? ParseSampleRate(positionalArgs[pIdx])   : null;
 
 	using var scope = app.Services.CreateScope();
-	var bodyImporter = scope.ServiceProvider.GetRequiredService<IBodyCatalogImporter>();
-	var bodyImportResult = await bodyImporter.ImportAsync(CancellationToken.None);
-	Console.WriteLine($"Body catalog synced. Inserted: {bodyImportResult.Inserted}, Updated: {bodyImportResult.Updated}, Total: {bodyImportResult.Total}.");
+	if (!skipSync) {
+		var bodyImporter = scope.ServiceProvider.GetRequiredService<IBodyCatalogImporter>();
+		var bodyImportResult = await bodyImporter.ImportAsync(CancellationToken.None);
+		Console.WriteLine($"Body catalog synced. Inserted: {bodyImportResult.Inserted}, Updated: {bodyImportResult.Updated}, Total: {bodyImportResult.Total}.");
+	}
 
 	var importer = scope.ServiceProvider.GetRequiredService<IEphemerisSampleImporter>();
-	var result = await importer.ImportAsync(hMax, startUtc, endUtc, sampleRate, CancellationToken.None);
+	var result = await importer.ImportAsync(hMax, startUtc, endUtc, sampleRate, slugFilter, bodyIdFilter, CancellationToken.None);
 	Console.WriteLine($"Ephemeris import complete. Bodies: {result.BodyCount:N0}, Samples: {result.SampleCount:N0}.");
 	return;
 }
@@ -292,12 +327,14 @@ static TimeSpan? ParseSampleRate(string value)
 	return normalized switch
 	{
 		"hourly" => TimeSpan.FromHours(1),
-		"daily" => TimeSpan.FromDays(1),
+		"daily"  => TimeSpan.FromDays(1),
+		_ when normalized.EndsWith("m", StringComparison.Ordinal) && int.TryParse(normalized[..^1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var minutes) && minutes > 0
+			=> TimeSpan.FromMinutes(minutes),
 		_ when normalized.EndsWith("h", StringComparison.Ordinal) && int.TryParse(normalized[..^1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var hours) && hours > 0
 			=> TimeSpan.FromHours(hours),
 		_ when normalized.EndsWith("d", StringComparison.Ordinal) && int.TryParse(normalized[..^1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var days) && days > 0
 			=> TimeSpan.FromDays(days),
-		_ => throw new ArgumentException("sample rate must be one of: auto, default, hourly, daily, <n>h, <n>d")
+		_ => throw new ArgumentException("sample rate must be one of: auto, default, hourly, daily, <n>m, <n>h, <n>d")
 	};
 }
 

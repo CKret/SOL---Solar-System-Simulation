@@ -22,7 +22,9 @@ public sealed partial class HorizonsEphemerisSampleImporter(
   // -------------------------------------------------------------------------
 
   public async Task<EphemerisSampleImportResult> ImportAsync(
-      double? hMax, DateTime? startUtc, DateTime? endUtc, TimeSpan? sampleRateOverride, CancellationToken cancellationToken)
+      double? hMax, DateTime? startUtc, DateTime? endUtc, TimeSpan? sampleRateOverride,
+      IReadOnlyList<string>? slugFilter, IReadOnlyList<int>? bodyIdFilter,
+      CancellationToken cancellationToken)
   {
     if (sampleRateOverride is not null && sampleRateOverride <= TimeSpan.Zero)
       throw new ArgumentOutOfRangeException(nameof(sampleRateOverride));
@@ -32,8 +34,19 @@ public sealed partial class HorizonsEphemerisSampleImporter(
     double? batchEndJd = endUtc.HasValue
       ? JulianDateConverter.FromDateTime(DateTime.SpecifyKind(endUtc.Value, DateTimeKind.Utc))   : null;
 
-    var bodies = await LoadBodiesForEphemerisAsync(hMax, cancellationToken);
-    Console.WriteLine($"Importing ephemeris for {bodies.Count:N0} bodies (hMax={hMax?.ToString() ?? "none"}, parallelism=5).");
+    List<(int BodyId, string Slug, string JplId, double MinJd, double MaxJd)> bodies;
+    string filterDesc;
+    if (bodyIdFilter is { Count: > 0 }) {
+      bodies = await LoadBodiesByIdAsync(bodyIdFilter, cancellationToken);
+      filterDesc = $"bodyIds=[{string.Join(",", bodyIdFilter)}]";
+    } else if (slugFilter is { Count: > 0 }) {
+      bodies = await LoadBodiesBySlugAsync(slugFilter, cancellationToken);
+      filterDesc = $"slugs=[{string.Join(",", slugFilter)}]";
+    } else {
+      bodies = await LoadBodiesForEphemerisAsync(hMax, cancellationToken);
+      filterDesc = $"hMax={hMax?.ToString() ?? "none"}";
+    }
+    Console.WriteLine($"Importing ephemeris for {bodies.Count:N0} bodies ({filterDesc}, parallelism=5).");
 
     int totalBodies = 0, totalSamples = 0, completed = 0;
     var step = sampleRateOverride ?? TimeSpan.FromDays(1);
@@ -57,6 +70,14 @@ public sealed partial class HorizonsEphemerisSampleImporter(
         try {
           await using var conn = _connectionFactory.CreateConnection();
           await conn.OpenAsync(ct);
+
+          // Targeted imports (slug/bodyId filter + explicit date range) always re-fetch:
+          // clear only the log entries so a different-resolution run isn't blocked by a
+          // previous one. Existing samples are kept — MERGE prevents true duplicates.
+          bool isTargeted = (slugFilter is { Count: > 0 } || bodyIdFilter is { Count: > 0 })
+                            && batchStartJd.HasValue && batchEndJd.HasValue;
+          if (isTargeted)
+            await DeleteLogChunksInRangeAsync(conn, bodyId, effectiveStart, effectiveEnd, ct);
 
           int inserted = 0;
           foreach (var window in EphemerisImportSourcePolicy.GetWindowsForTarget(slug, effectiveStart, effectiveEnd, sampleRateOverride)) {
@@ -89,16 +110,21 @@ public sealed partial class HorizonsEphemerisSampleImporter(
         }
       });
 
-    // Reset newly-completed bodies that still have zero-sample chunks so the
-    // DB count is accurate immediately after the run, and they get retried next pass.
-    var resetCount = await ResetBodiesWithZeroChunksAsync(hMax, cancellationToken);
-    if (resetCount > 0)
-      Console.WriteLine($"Reset {resetCount} bodies with zero-sample chunks (will retry next run).");
+    bool isTargetedRun = slugFilter is { Count: > 0 } || bodyIdFilter is { Count: > 0 };
 
-    var remaining = await CountIncompleteBodiesAsync(hMax, cancellationToken);
-    Console.WriteLine(remaining > 0
-      ? $"{remaining} bodies still incomplete — run again to continue."
-      : "All target bodies complete.");
+    // Reset / incomplete checks only make sense for full (non-targeted) runs.
+    // For targeted imports the body filter bypasses CompletedEphemeris, so the
+    // global counts would just reflect pre-existing state from the daily import.
+    if (!isTargetedRun) {
+      var resetCount = await ResetBodiesWithZeroChunksAsync(hMax, cancellationToken);
+      if (resetCount > 0)
+        Console.WriteLine($"Reset {resetCount} bodies with zero-sample chunks (will retry next run).");
+
+      var remaining = await CountIncompleteBodiesAsync(hMax, cancellationToken);
+      Console.WriteLine(remaining > 0
+        ? $"{remaining} bodies still incomplete — run again to continue."
+        : "All target bodies complete.");
+    }
 
     return new EphemerisSampleImportResult(totalBodies, totalSamples, 0);
   }
@@ -338,8 +364,10 @@ public sealed partial class HorizonsEphemerisSampleImporter(
     var quotedCommand = Uri.EscapeDataString($"'{command}'");
     var quotedStart   = Uri.EscapeDataString($"'JD {startJd}'");
     var quotedEnd     = Uri.EscapeDataString($"'JD {endJd}'");
-    var stepHours     = Math.Max(1, (int)Math.Round(step.TotalHours, MidpointRounding.AwayFromZero));
-    var quotedStep    = Uri.EscapeDataString($"'{stepHours} h'");
+    string stepStr = step.TotalMinutes < 60
+      ? $"{Math.Max(1, (int)Math.Round(step.TotalMinutes, MidpointRounding.AwayFromZero))} m"
+      : $"{Math.Max(1, (int)Math.Round(step.TotalHours,   MidpointRounding.AwayFromZero))} h";
+    var quotedStep    = Uri.EscapeDataString($"'{stepStr}'");
 
     return $"{HorizonsApiBase}?format=json&COMMAND={quotedCommand}&OBJ_DATA='NO'&MAKE_EPHEM='YES'" +
            $"&EPHEM_TYPE='VECTORS'&CENTER='500@0'&REF_PLANE='ECLIPTIC'&REF_SYSTEM='ICRF'" +
@@ -478,21 +506,6 @@ ORDER BY l.BodyId, l.StartJd;";
     return list;
   }
 
-  private static async Task UpdateLogSampleCountAsync(
-      SqlConnection conn, int bodyId, double startJd, double endJd, int count, CancellationToken ct)
-  {
-    const string sql = @"
-UPDATE dbo.EphemerisImportLog
-SET SampleCount = @count
-WHERE BodyId = @bodyId AND StartJd = @startJd AND EndJd = @endJd;";
-    await using var cmd = new SqlCommand(sql, conn);
-    cmd.Parameters.AddWithValue("@bodyId",  bodyId);
-    cmd.Parameters.AddWithValue("@startJd", startJd);
-    cmd.Parameters.AddWithValue("@endJd",   endJd);
-    cmd.Parameters.AddWithValue("@count",   count);
-    await cmd.ExecuteNonQueryAsync(ct);
-  }
-
   private async Task<int> CountIncompleteBodiesAsync(double? hMax, CancellationToken ct)
   {
     var hFilter = hMax.HasValue ? "AND (H_AbsMag IS NULL OR H_AbsMag <= @hMax)" : "AND H_AbsMag IS NULL AND Source != 'mpcorb'";
@@ -572,6 +585,60 @@ WHERE b.IsActive = 1
   // -------------------------------------------------------------------------
 
   private async Task<List<(int BodyId, string Slug, string JplId, double MinJd, double MaxJd)>>
+      LoadBodiesByIdAsync(IReadOnlyList<int> bodyIds, CancellationToken ct)
+  {
+    var paramNames = Enumerable.Range(0, bodyIds.Count).Select(i => $"@id{i}").ToList();
+    var sql = $@"
+SELECT BodyId, Slug, JplHorizonsId, EphemerisMinJD, EphemerisMaxJD
+FROM dbo.Bodies
+WHERE IsActive = 1
+  AND JplHorizonsId IS NOT NULL
+  AND EphemerisMinJD IS NOT NULL
+  AND EphemerisMaxJD IS NOT NULL
+  AND BodyId IN ({string.Join(", ", paramNames)})
+ORDER BY BodyId;";
+
+    await using var conn = _connectionFactory.CreateConnection();
+    await conn.OpenAsync(ct);
+    await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 0 };
+    for (int i = 0; i < bodyIds.Count; i++)
+      cmd.Parameters.AddWithValue(paramNames[i], bodyIds[i]);
+    await using var reader = await cmd.ExecuteReaderAsync(ct);
+
+    var list = new List<(int, string, string, double, double)>();
+    while (await reader.ReadAsync(ct))
+      list.Add((reader.GetInt32(0), reader.GetString(1), reader.GetString(2), reader.GetDouble(3), reader.GetDouble(4)));
+    return list;
+  }
+
+  private async Task<List<(int BodyId, string Slug, string JplId, double MinJd, double MaxJd)>>
+      LoadBodiesBySlugAsync(IReadOnlyList<string> slugs, CancellationToken ct)
+  {
+    var paramNames = Enumerable.Range(0, slugs.Count).Select(i => $"@s{i}").ToList();
+    var sql = $@"
+SELECT BodyId, Slug, JplHorizonsId, EphemerisMinJD, EphemerisMaxJD
+FROM dbo.Bodies
+WHERE IsActive = 1
+  AND JplHorizonsId IS NOT NULL
+  AND EphemerisMinJD IS NOT NULL
+  AND EphemerisMaxJD IS NOT NULL
+  AND Slug IN ({string.Join(", ", paramNames)})
+ORDER BY Slug;";
+
+    await using var conn = _connectionFactory.CreateConnection();
+    await conn.OpenAsync(ct);
+    await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 0 };
+    for (int i = 0; i < slugs.Count; i++)
+      cmd.Parameters.AddWithValue(paramNames[i], slugs[i]);
+    await using var reader = await cmd.ExecuteReaderAsync(ct);
+
+    var list = new List<(int, string, string, double, double)>();
+    while (await reader.ReadAsync(ct))
+      list.Add((reader.GetInt32(0), reader.GetString(1), reader.GetString(2), reader.GetDouble(3), reader.GetDouble(4)));
+    return list;
+  }
+
+  private async Task<List<(int BodyId, string Slug, string JplId, double MinJd, double MaxJd)>>
       LoadBodiesForEphemerisAsync(double? hMax, CancellationToken ct)
   {
     await using var conn = _connectionFactory.CreateConnection();
@@ -641,6 +708,19 @@ WHERE BodyId = @bodyId
     cmd.Parameters.AddWithValue("@bodyId", bodyId);
     if (newMinJd.HasValue) cmd.Parameters.AddWithValue("@minJd", newMinJd.Value);
     if (newMaxJd.HasValue) cmd.Parameters.AddWithValue("@maxJd", newMaxJd.Value);
+    await cmd.ExecuteNonQueryAsync(ct);
+  }
+
+  private static async Task DeleteLogChunksInRangeAsync(
+      SqlConnection conn, int bodyId, double startJd, double endJd, CancellationToken ct)
+  {
+    const string sql = @"
+DELETE FROM dbo.EphemerisImportLog
+WHERE BodyId = @bodyId AND StartJd >= @startJd AND EndJd <= @endJd;";
+    await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 0 };
+    cmd.Parameters.AddWithValue("@bodyId",  bodyId);
+    cmd.Parameters.AddWithValue("@startJd", startJd);
+    cmd.Parameters.AddWithValue("@endJd",   endJd);
     await cmd.ExecuteNonQueryAsync(ct);
   }
 

@@ -505,30 +505,43 @@ const EphemerisSystem = (() => {
     const sunBodyId = _slugToId.get('sun');
     if (sunBodyId == null) return samples;
 
-    const jdKey = (jd) => Number(jd).toFixed(8);
-    const sunByJd = new Map();
-    for (const s of samples) {
-      if (s.bodyId === sunBodyId) sunByJd.set(jdKey(s.sampleJd), s);
+    const sunSamples = samples
+      .filter(s => s.bodyId === sunBodyId)
+      .sort((a, b) => a.sampleJd - b.sampleJd);
+
+    if (sunSamples.length === 0) return samples;
+
+    // Linearly interpolate sun's SSB position at any JD — avoids requiring exact
+    // JD matches when body samples are hourly but sun samples are only daily.
+    function sunAt(jd) {
+      if (sunSamples.length === 1) return sunSamples[0];
+      if (jd <= sunSamples[0].sampleJd) return sunSamples[0];
+      const last = sunSamples[sunSamples.length - 1];
+      if (jd >= last.sampleJd) return last;
+
+      let lo = 0, hi = sunSamples.length - 1;
+      while (hi - lo > 1) {
+        const mid = (lo + hi) >>> 1;
+        if (sunSamples[mid].sampleJd <= jd) lo = mid; else hi = mid;
+      }
+      const s0 = sunSamples[lo], s1 = sunSamples[hi];
+      const t = (jd - s0.sampleJd) / (s1.sampleJd - s0.sampleJd);
+      return {
+        x: s0.x + t * (s1.x - s0.x),
+        y: s0.y + t * (s1.y - s0.y),
+        z: s0.z + t * (s1.z - s0.z),
+        vx: (s0.vx != null && s1.vx != null) ? s0.vx + t * (s1.vx - s0.vx) : null,
+        vy: (s0.vy != null && s1.vy != null) ? s0.vy + t * (s1.vy - s0.vy) : null,
+        vz: (s0.vz != null && s1.vz != null) ? s0.vz + t * (s1.vz - s0.vz) : null,
+      };
     }
 
-    if (sunByJd.size === 0) return samples;
-
     return samples.map((s) => {
-      const sun = sunByJd.get(jdKey(s.sampleJd));
-      if (!sun) return s;
-
       if (s.bodyId === sunBodyId) {
-        return {
-          ...s,
-          x: 0,
-          y: 0,
-          z: 0,
-          vx: 0,
-          vy: 0,
-          vz: 0,
-        };
+        return { ...s, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0 };
       }
 
+      const sun = sunAt(s.sampleJd);
       return {
         ...s,
         x: s.x - sun.x,
