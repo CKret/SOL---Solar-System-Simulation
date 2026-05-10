@@ -4,6 +4,11 @@ This changelog is derived from the project's git commit messages and is listed n
 
 ## 2026-05-11
 
+### Removed
+- `82d5ce2` Deleted `trajectory/` folder (8 Voyager `.txt` files) — trajectory data is baked into `js/voyager_trajectories.js`.
+- `82d5ce2` Deleted duplicate root-level `three.min.js`; the canonical copy is `js/three.min.js`.
+- `29882af` Deleted `import_ephemeris_batches.ps1` — was a temporary workaround; the `import-samples` CLI command already accepts `startUtc`/`endUtc` arguments directly.
+
 ### Changed
 - `95ec34e` Replaced raw ADO.NET (`SqlConnection`/`SqlCommand`) with Entity Framework Core (DB-first) across all importers and services. New data access uses `IDbContextFactory<T>` for per-operation contexts; `ISqlConnectionFactory` and `ISqlWriteConnectionFactory` removed.
 - `95ec34e` `import-samples` parallelism reduced from 5×1 to 2×1 (bodies × chunks) to stay within JPL Horizons rate limits.
