@@ -4593,17 +4593,30 @@ renderer.domElement.addEventListener('wheel', e=>{
   targetR = camR;
 },{passive:true});
 
-let lastTD=null;
+let lastTD=null, lastTA=null;
+let touchStartX=0, touchStartY=0;
 renderer.domElement.addEventListener('touchstart', e=>{
-  if(e.touches.length===1){dragging=true;prevX=e.touches[0].clientX;prevY=e.touches[0].clientY;}
-  if(e.touches.length===2)lastTD=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
+  if(e.touches.length===1){
+    dragging=true;
+    prevX=touchStartX=e.touches[0].clientX;
+    prevY=touchStartY=e.touches[0].clientY;
+  }
+  if(e.touches.length===2){
+    lastTD=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
+    lastTA=Math.atan2(e.touches[1].clientY-e.touches[0].clientY,e.touches[1].clientX-e.touches[0].clientX);
+  }
   e.preventDefault();
   setSceneDragSelectionSuppressed(true);
 },{passive:false});
-renderer.domElement.addEventListener('touchend',()=>{
+renderer.domElement.addEventListener('touchend',e=>{
+  const t=e.changedTouches[0];
+  const wasTap=e.changedTouches.length===1&&e.touches.length===0&&
+               Math.hypot(t.clientX-touchStartX,t.clientY-touchStartY)<8;
   dragging=false;
   lastTD=null;
+  lastTA=null;
   setSceneDragSelectionSuppressed(false);
+  if(wasTap&&performance.now()>=suppressSceneClickUntil) handleSceneClick(t.clientX,t.clientY);
 });
 renderer.domElement.addEventListener('touchmove',e=>{
   if(e.touches.length===1&&dragging){
@@ -4619,10 +4632,15 @@ renderer.domElement.addEventListener('touchmove',e=>{
   }
   if(e.touches.length===2){
     const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
-    if(lastTD){
-      camR=Math.max(0.001,Math.min(2000000,camR*(lastTD/d))); targetR=camR;
+    const a=Math.atan2(e.touches[1].clientY-e.touches[0].clientY,e.touches[1].clientX-e.touches[0].clientX);
+    if(lastTD){ camR=Math.max(0.001,Math.min(2000000,camR*(lastTD/d))); targetR=camR; }
+    if(lastTA!=null){
+      let da=a-lastTA;
+      if(da>Math.PI)da-=Math.PI*2; if(da<-Math.PI)da+=Math.PI*2;
+      if(geoLock&&focusMesh) geoLockLocalUp.applyAxisAngle(geoLockLocalCameraDir,da).normalize();
+      else cameraRoll-=da;
     }
-    lastTD=d;
+    lastTD=d; lastTA=a;
   }
   e.preventDefault();
 },{passive:false});
@@ -5102,15 +5120,9 @@ function suppressSceneClick(durationMs = 400) {
   suppressSceneClickUntil = performance.now() + durationMs;
 }
 
-renderer.domElement.addEventListener('click',e=>{
-  if (performance.now() < suppressSceneClickUntil) return;
-  if(mouseDragDist > 4) return; // suppress click after drag
-  const h=getHit(e.clientX,e.clientY);
-  if(!h){
-    // Click on empty space: deselect and return to solar view
-    clearFocusSelection();
-    return;
-  }
+function handleSceneClick(cx, cy) {
+  const h=getHit(cx,cy);
+  if(!h){ clearFocusSelection(); return; }
   if(h===sunMesh){
     if(focusMesh===sunMesh){ clearFocusSelection(); return; }
     setFocus('sun');
@@ -5165,6 +5177,11 @@ renderer.domElement.addEventListener('click',e=>{
       }
     }
   }
+}
+renderer.domElement.addEventListener('click',e=>{
+  if (performance.now() < suppressSceneClickUntil) return;
+  if(mouseDragDist > 4) return;
+  handleSceneClick(e.clientX, e.clientY);
 });
 
 // ── Analytical trail computation ──────────────────────────────────────────────
