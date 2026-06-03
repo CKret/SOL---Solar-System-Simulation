@@ -2904,7 +2904,7 @@ for (const cd of COMET_DATA) {
   nucleus.add(coma);
   nucleus.userData.coma = coma;
 
-  const DUST_PTS = 800;
+  const DUST_PTS = 3000;
   const dustGeo = new THREE.BufferGeometry();
   const dustPos = new Float32Array(DUST_PTS * 3);
   const dustCol = new Float32Array(DUST_PTS * 3);
@@ -2913,13 +2913,13 @@ for (const cd of COMET_DATA) {
   dustGeo.setDrawRange(0, 0);
   const dustSiz = null;
   const dustTail = new THREE.Points(dustGeo,
-    new THREE.PointsMaterial({ map:dotTex, vertexColors:true, size:0.25, transparent:true, opacity:0.9, sizeAttenuation:true, depthWrite:false, alphaTest:0.01 })
+    new THREE.PointsMaterial({ map:dotTex, vertexColors:true, size:0.09, transparent:true, opacity:1.0, sizeAttenuation:true, depthWrite:false, blending:THREE.AdditiveBlending })
   );
   dustTail.raycast = () => {};
   dustTail.frustumCulled = false;
   scene.add(dustTail);
 
-  const ION_PTS = 400;
+  const ION_PTS = 1200;
   const ionGeo  = new THREE.BufferGeometry();
   const ionPos  = new Float32Array(ION_PTS * 3);
   const ionCol  = new Float32Array(ION_PTS * 3);
@@ -2928,7 +2928,7 @@ for (const cd of COMET_DATA) {
   ionGeo.setDrawRange(0, 0);
   const ionSiz = null;
   const ionTail = new THREE.Points(ionGeo,
-    new THREE.PointsMaterial({ map:dotTex, vertexColors:true, size:0.15, transparent:true, opacity:0.8, sizeAttenuation:true, depthWrite:false, alphaTest:0.01 })
+    new THREE.PointsMaterial({ map:dotTex, vertexColors:true, size:0.07, transparent:true, opacity:1.0, sizeAttenuation:true, depthWrite:false, blending:THREE.AdditiveBlending })
   );
   ionTail.raycast = () => {};
   ionTail.frustumCulled = false;
@@ -3155,47 +3155,88 @@ function updateComets() {
     const dustLen = Math.min(tailStrength * 50, maxTailLen);
     const ionLen  = Math.min(tailStrength * 30, maxTailLen * 0.6);
 
-    // Dust tail — stable fan shape, no random per frame
+    // Orbital velocity direction — dust tail curves (particles lag behind orbital motion).
+    // Curvature is stronger near perihelion where the comet moves fastest.
+    const _prevPos = getCometWorldPositionAtTime(cm, simTime - 0.005, new THREE.Vector3());
+    const _antiVel = new THREE.Vector3().subVectors(_prevPos, _cometWPos).normalize();
+    if (Math.abs(_antiVel.dot(_cometAwayFromSun)) > 0.999) _antiVel.set(0, 1, 0);
+    const curveFactor = Math.min(1.0, 1.5 / Math.max(distAU, 0.3));
+
+    // Perpendicular basis for spreading particles
     _cometTailRight.crossVectors(_worldUp, _cometAwayFromSun);
     if (_cometTailRight.lengthSq() < 1e-8) _cometTailRight.set(1, 0, 0);
     else _cometTailRight.normalize();
     _cometTailUp.crossVectors(_cometAwayFromSun, _cometTailRight).normalize();
+
+    // Lazy-init streaming particle state (phase + per-lifetime lateral seeds).
+    // Phases are spread across [0,1) so particles cover the full tail length at all times.
+    if (!cm.dustPhase) {
+      const dn = cm.dustPos.length / 3, ion = cm.ionPos.length / 3;
+      cm.dustPhase = new Float32Array(dn); cm.dustSeed = new Float32Array(dn * 2);
+      cm.ionPhase  = new Float32Array(ion); cm.ionSeed  = new Float32Array(ion * 2);
+      for (let i = 0; i < dn;  i++) { cm.dustPhase[i] = Math.random(); cm.dustSeed[i*2] = Math.random(); cm.dustSeed[i*2+1] = Math.random(); }
+      for (let i = 0; i < ion; i++) { cm.ionPhase[i]  = Math.random(); cm.ionSeed[i*2]  = Math.random(); cm.ionSeed[i*2+1]  = Math.random(); }
+      cm._tailPrevSimTime = simTime;
+    }
+    // ds = simulated years elapsed this frame; capped to avoid huge jumps on time-step clicks.
+    // Particles flow proportionally to sim speed: frozen when paused, slow at 1h/s, fast at 1yr/s.
+    const ds = Math.min(Math.abs(simTime - cm._tailPrevSimTime), 0.1);
+    cm._tailPrevSimTime = simTime;
+
+    // Dust tail: particles stream from nucleus to tip and reset, driven by simulated time.
+    // Additive blending causes overlapping particles near the nucleus to accumulate brightness.
+    // Speed in phase/year: calibrated so 1 sim-day/s ≈ 0.28 phase/wall-s (same as the old wall-clock rate).
     const DUST_PTS = cm.dustPos.length / 3;
-    for (let i=0; i<DUST_PTS; i++) {
-      // Use golden angle for stable, even distribution
-      const f      = i / DUST_PTS;
-      const golden = i * 2.399963; // golden angle in radians
-      const spread = f * f * dustLen * 0.12; // tight fan
-      const len    = f * dustLen;
-      const sx = Math.cos(golden) * spread * _cometTailRight.x + Math.sin(golden) * spread * _cometTailUp.x;
-      const sy = Math.cos(golden) * spread * _cometTailRight.y + Math.sin(golden) * spread * _cometTailUp.y;
-      const sz = Math.cos(golden) * spread * _cometTailRight.z + Math.sin(golden) * spread * _cometTailUp.z;
-      cm.dustPos[i*3]   = _cometWPos.x + _cometAwayFromSun.x*len + sx;
-      cm.dustPos[i*3+1] = _cometWPos.y + _cometAwayFromSun.y*len + sy;
-      cm.dustPos[i*3+2] = _cometWPos.z + _cometAwayFromSun.z*len + sz;
-      const bright = Math.pow(1-f, 0.8) * tailStrength;
-      cm.dustCol[i*3]   = bright * 0.9;
-      cm.dustCol[i*3+1] = bright * 0.92;
-      cm.dustCol[i*3+2] = bright * 1.0;
+    const DUST_SPEED = 102; // phase per simulated year (~1 full cycle per simulated day at 1-day/s)
+    for (let i = 0; i < DUST_PTS; i++) {
+      cm.dustPhase[i] += DUST_SPEED * ds;
+      if (cm.dustPhase[i] >= 1.0) {
+        cm.dustPhase[i] -= 1.0;
+        cm.dustSeed[i*2] = Math.random(); cm.dustSeed[i*2+1] = Math.random();
+      }
+      const f   = cm.dustPhase[i];
+      const len = f * dustLen;
+      // Direction bends from anti-solar toward anti-velocity (orbital lag)
+      const bend = f * f * curveFactor * 0.65;
+      const dx = _cometAwayFromSun.x*(1-bend) + _antiVel.x*bend;
+      const dy = _cometAwayFromSun.y*(1-bend) + _antiVel.y*bend;
+      const dz = _cometAwayFromSun.z*(1-bend) + _antiVel.z*bend;
+      // Gaussian cross-section, tighter near nucleus, wider toward tip
+      const sigma = f * dustLen * 0.038;
+      const h1 = cm.dustSeed[i*2], h2 = cm.dustSeed[i*2+1];
+      const r = Math.min(sigma * Math.sqrt(-2.0 * Math.log(Math.max(h1, 1e-9))), sigma * 3.0);
+      const theta = h2 * Math.PI * 2;
+      cm.dustPos[i*3]   = _cometWPos.x + dx*len + Math.cos(theta)*r*_cometTailRight.x + Math.sin(theta)*r*_cometTailUp.x;
+      cm.dustPos[i*3+1] = _cometWPos.y + dy*len + Math.cos(theta)*r*_cometTailRight.y + Math.sin(theta)*r*_cometTailUp.y;
+      cm.dustPos[i*3+2] = _cometWPos.z + dz*len + Math.cos(theta)*r*_cometTailRight.z + Math.sin(theta)*r*_cometTailUp.z;
+      const bright = Math.exp(-f * 2.5) * tailStrength * 1.5;
+      cm.dustCol[i*3]   = Math.min(bright * 1.00, 1);
+      cm.dustCol[i*3+1] = Math.min(bright * 0.90, 1);
+      cm.dustCol[i*3+2] = Math.min(bright * 0.60, 1);
     }
     cm.dustGeo.attributes.position.needsUpdate = true;
     cm.dustGeo.attributes.color.needsUpdate    = true;
     cm.dustGeo.setDrawRange(0, tailStrength > 0.01 ? DUST_PTS : 0);
 
-    // Ion tail — narrower, straighter, more blue
+    // Ion tail: faster stream, straight anti-solar, very narrow, blue-white plasma.
     const ION_PTS = cm.ionPos.length / 3;
-    for (let i=0; i<ION_PTS; i++) {
-      const f      = i / ION_PTS;
-      const golden = i * 2.399963;
-      const spread = f * f * ionLen * 0.04;
-      const len    = f * ionLen;
-      const sx = Math.cos(golden) * spread * _cometTailRight.x + Math.sin(golden) * spread * _cometTailUp.x;
-      const sy = Math.cos(golden) * spread * _cometTailRight.y + Math.sin(golden) * spread * _cometTailUp.y;
-      const sz = Math.cos(golden) * spread * _cometTailRight.z + Math.sin(golden) * spread * _cometTailUp.z;
-      cm.ionPos[i*3]   = _cometWPos.x + _cometAwayFromSun.x*len + sx;
-      cm.ionPos[i*3+1] = _cometWPos.y + _cometAwayFromSun.y*len + sy;
-      cm.ionPos[i*3+2] = _cometWPos.z + _cometAwayFromSun.z*len + sz;
-      const bright = Math.pow(1-f, 1.5) * tailStrength * 0.7;
+    const ION_SPEED = 183; // phase per simulated year (plasma moves ~1.8× faster than dust)
+    for (let i = 0; i < ION_PTS; i++) {
+      cm.ionPhase[i] += ION_SPEED * ds;
+      if (cm.ionPhase[i] >= 1.0) {
+        cm.ionPhase[i] -= 1.0;
+        cm.ionSeed[i*2] = Math.random(); cm.ionSeed[i*2+1] = Math.random();
+      }
+      const f   = cm.ionPhase[i];
+      const len = f * ionLen;
+      const sigma = f * ionLen * 0.010;
+      const h1 = cm.ionSeed[i*2], h2 = cm.ionSeed[i*2+1];
+      const r = Math.min(sigma * Math.sqrt(-2.0 * Math.log(Math.max(h1, 1e-9))), sigma * 3.0);
+      const theta = h2 * Math.PI * 2;
+      cm.ionPos[i*3]   = _cometWPos.x + _cometAwayFromSun.x*len + Math.cos(theta)*r*_cometTailRight.x + Math.sin(theta)*r*_cometTailUp.x;
+      cm.ionPos[i*3+1] = _cometWPos.y + _cometAwayFromSun.y*len + Math.cos(theta)*r*_cometTailRight.y + Math.sin(theta)*r*_cometTailUp.y;
+      cm.ionPos[i*3+2] = _cometWPos.z + _cometAwayFromSun.z*len + Math.cos(theta)*r*_cometTailRight.z + Math.sin(theta)*r*_cometTailUp.z;
+      const bright = Math.exp(-f * 3.0) * tailStrength;
       cm.ionCol[i*3]   = bright * 0.5;
       cm.ionCol[i*3+1] = bright * 0.8;
       cm.ionCol[i*3+2] = bright * 1.0;
