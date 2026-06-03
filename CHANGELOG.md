@@ -2,6 +2,22 @@
 
 This changelog is derived from the project's git commit messages and is listed newest first.
 
+## 2026-06-03
+
+### Added
+- `a7dfebb` Probes On/Off toggle button hides or shows all space-probe trails.
+- `a7dfebb` `--debug` flag added to import commands for verbose diagnostic output.
+- `a7dfebb` Scene shadows enabled.
+- `a7dfebb` Ephemeris API requests are now chunked to stay within server limits.
+
+### Fixed
+- `a7dfebb` Moon orbital plane was incorrectly non-ecliptic; the orbit now propagates in the proper ecliptic reference frame.
+- `cab3bb3` Removed `appsettings.Production.json` from git tracking and added `**/appsettings.Production.json` and `**/secrets.json` to `.gitignore` so database credentials are never committed. Connection strings must be supplied via .NET user-secrets (development) or server environment variables (production).
+- `b676910` Space probe trail lines appeared as rotating low-poly polygons: replaced single-pass uniform time sampling with a two-pass approach — a coarse 200-point pass locates the 360° arc cutoff, then a dense 999-point pass covers only the visible arc. Trail anchor dots removed.
+- `fd898bf` Comet orbit lines appeared to rotate each frame when time-uniform sampling was used on highly eccentric orbits: replaced with eccentric-anomaly sampling over [0, 2π] anchored at perihelion so orbit geometry is stable and independent of simulation time.
+- `fd898bf` Comet tail particles were static (hash-based fixed positions): replaced with a streaming phase-based particle system where each particle advances from nucleus to tail tip then resets, driven by simulated time. Particles freeze when paused and flow at a speed proportional to the selected simulation rate.
+- `fd898bf` Comet dust tail curvature now scales with orbital speed: the tail bends away from the anti-solar direction more strongly near perihelion, matching the physical lag effect seen in real comets.
+
 ## 2026-05-11
 
 ### Removed

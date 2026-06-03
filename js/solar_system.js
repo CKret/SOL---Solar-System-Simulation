@@ -141,7 +141,40 @@ function getDwarfScenePositionAtTime(dwarf, timeYears, out = new THREE.Vector3()
   );
 }
 
+// Full 3D Keplerian formula for moons with precessing orbital plane (e.g., Earth's Moon).
+// Returns the moon's ecliptic-relative offset from its parent in Three.js coordinates
+// (x = ecliptic X, y = ecliptic Z = out-of-plane, z = -ecliptic Y).
+// Uses the same transformation as the planet orbit-line code (lines ~1497-1506).
+function _moonFullKeplerEcliptic(moon, timeYears, out) {
+  const tDays    = timeYears * 365.25;
+  const OmegaRad = THREE.MathUtils.degToRad(moon.md.Omega0 + moon.md.OmegaRate * tDays);
+  const omegaRad = THREE.MathUtils.degToRad(moon.md.omega0 + moon.md.omegaRate * tDays);
+  const lRad     = THREE.MathUtils.degToRad(moon.md.l0     + moon.md.nDegPerDay * tDays);
+  let M = (lRad - OmegaRad - omegaRad) % (2 * Math.PI);
+  if (M < 0) M += 2 * Math.PI;
+  const E  = keplerE(M, moon.md.ecc);
+  const nu = 2 * Math.atan2(Math.sqrt(1 + moon.md.ecc) * Math.sin(E / 2),
+                             Math.sqrt(1 - moon.md.ecc) * Math.cos(E / 2));
+  const r  = moon.orbitSma * (1 - moon.md.ecc * Math.cos(E));
+  const u  = omegaRad + nu; // argument of latitude (from ascending node)
+  const cosO = Math.cos(OmegaRad), sinO = Math.sin(OmegaRad);
+  const incRad = moon.md.inc * Math.PI / 180;
+  const cosI = Math.cos(incRad), sinI = Math.sin(incRad);
+  const ex = r * (cosO * Math.cos(u) - sinO * Math.sin(u) * cosI); // ecliptic X
+  const ey = r * (sinO * Math.cos(u) + cosO * Math.sin(u) * cosI); // ecliptic Y
+  const ez = r * Math.sin(u) * sinI;                                // ecliptic Z (out-of-plane)
+  return out.set(ex, ez, -ey); // Three.js: x=ecX, y=ecZ, z=-ecY
+}
+
 function getMoonWorldPositionAtTime(moon, timeYears, out = new THREE.Vector3(), parentWorldPos = null) {
+  if (parentWorldPos) out.copy(parentWorldPos);
+  else getPlanetScenePositionAtTime(moon.parentPlanet, timeYears, out);
+  if (moon.md.Omega0 !== undefined) {
+    // Full 3D Keplerian with precessing Omega and omega (e.g., Earth's Moon)
+    const eclRel = _moonFullKeplerEcliptic(moon, timeYears, new THREE.Vector3());
+    out.add(eclRel);
+    return out;
+  }
   const moonPeriodYears = getMoonOrbitPeriodYears(moon);
   const M = (2 * Math.PI * timeYears / moonPeriodYears) + moon.angle0;
   const E = keplerE(M, moon.md.ecc);
@@ -157,13 +190,19 @@ function getMoonWorldPositionAtTime(moon, timeYears, out = new THREE.Vector3(), 
   const eqOffset = new THREE.Vector3(eqX, eqY, eqZ);
   if (moon.parentPlanet.tiltGroup && moon.md.incRef !== 'ecliptic')
     eqOffset.applyQuaternion(moon.parentPlanet.tiltGroup.quaternion);
-  if (parentWorldPos) out.copy(parentWorldPos);
-  else getPlanetScenePositionAtTime(moon.parentPlanet, timeYears, out);
   out.add(eqOffset);
   return out;
 }
 
 function getMoonLocalPositionAtTime(moon, timeYears, out = new THREE.Vector3()) {
+  if (moon.md.Omega0 !== undefined) {
+    // Compute ecliptic-relative position, then rotate into moonIncGrp-local frame.
+    // moonIncGrp quaternion (YXZ: y=Omega, x=inc) is updated each frame to current simTime.
+    // Using the current quaternion for past/future samples is fine: Omega changes ~1.4°/orbit.
+    _moonFullKeplerEcliptic(moon, timeYears, out);
+    out.applyQuaternion(_moonBasisInvQ.copy(moon.moonIncGrp.quaternion).invert());
+    return out;
+  }
   const moonPeriodYears = getMoonOrbitPeriodYears(moon);
   const M = (2 * Math.PI * timeYears / moonPeriodYears) + moon.angle0;
   const E = keplerE(M, moon.md.ecc);
@@ -2096,7 +2135,16 @@ const jupiterPlanet = planets.find(p => p.d.name === 'JUPITER');
 // r = visual radius in scene units
 const MOON_DATA = [
   // ── Earth ──────────────────────────────────────────────────────────────────
-  { planet:'EARTH',   name:'Moon',      sma:2.8,  period:0.07480263, ecc:0.055, inc:5.1,  r:0.22, color:0xAAAAAA, phaseDeg:222.49, tidalLock:true, tidalYawDeg:-90, tidalPitchDeg:-10, tidalRollDeg:0, incRef:'ecliptic' },
+  // Full J2000 lunar orbital elements with precession (Meeus, Ch. 47 / 53 simplified).
+  // l0/nDegPerDay: mean longitude at J2000 and mean motion.
+  // Omega0/OmegaRate: ascending node (~18.6 yr regression). omega0/omegaRate: arg of perigee (~8.85 yr).
+  // phaseDeg: mean anomaly M0 at J2000 (= l0 - Omega0 - omega0 ≈ 135°), kept for Kepler fallback paths.
+  { planet:'EARTH',   name:'Moon',      sma:2.8,  period:0.07480263, ecc:0.0549, inc:5.1454, r:0.22, color:0xAAAAAA,
+    l0:218.3165, nDegPerDay:13.17639648,
+    Omega0:125.04,  OmegaRate:-0.0529539,
+    omega0:-41.69,  omegaRate:0.164358,
+    phaseDeg:135.0,
+    tidalLock:true, tidalYawDeg:-90, tidalPitchDeg:-10, tidalRollDeg:0, incRef:'ecliptic' },
 
   // ── Mars ───────────────────────────────────────────────────────────────────
   { planet:'MARS',    name:'Phobos',    sma:1.4,  period:0.000865,ecc:0.015, inc:1.1,  r:0.06, color:0x997755 },
@@ -2417,6 +2465,11 @@ for (const md of MOON_DATA) {
   // Moon lives in an inclined group parented to the planet's incGrp (not mesh)
   // so the planet's axial rotation doesn't carry the moon around with it
   const moonIncGrp = new THREE.Group();
+  if (md.Omega0 !== undefined) {
+    // Ascending node rotation must be applied before inclination (Y then X in intrinsic order).
+    moonIncGrp.rotation.order = 'YXZ';
+    moonIncGrp.rotation.y = THREE.MathUtils.degToRad(md.Omega0);
+  }
   moonIncGrp.rotation.x = THREE.MathUtils.degToRad(md.inc);
   // ecliptic-frame moons (Moon, Nereid) have inc relative to the ecliptic; parent to incGrp.
   // All others have inc relative to the planet's equatorial plane; parent to tiltGroup.
@@ -6313,6 +6366,11 @@ function animate(){
       m.moonIncGrp.position.copy(m.parentPlanet.tiltGroup.position);
     else
       m.moonIncGrp.position.set(0, 0, 0);
+    // Precess ascending node each frame for moons with a known precession rate (Earth's Moon).
+    // moonIncGrp uses YXZ Euler order so the Y (Omega) rotation is applied before X (inclination).
+    if (m.md.OmegaRate !== undefined) {
+      m.moonIncGrp.rotation.y = THREE.MathUtils.degToRad(m.md.Omega0 + m.md.OmegaRate * simTime * 365.25);
+    }
     if (_moonEph && getMoonEphemerisLocalPosition(m, simTime, _moonLocalPos)) {
       m.moonMesh.position.copy(_moonLocalPos);
     } else {
