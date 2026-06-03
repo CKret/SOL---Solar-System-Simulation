@@ -147,7 +147,14 @@ public sealed class SqlServerEphemerisRepository(IDbContextFactory<SolReadDbCont
             : "AND b.Source != 'mpcorb' AND b.Kind IN ('star', 'planet', 'probe', 'moon', 'dwarf-planet', 'comet')";
 
         // Subquery-based SQL (no CTEs so EF Core can safely wrap it).
-        var sql = step <= 1 ? $@"
+        // step>1: use JD arithmetic modulo instead of ROW_NUMBER() — avoids a full
+        // PARTITION BY sort over millions of rows and lets SQL Server use the
+        // (BodyId, SampleJd) index to filter inline.
+        var stepFilter = step <= 1
+            ? ""
+            : "AND CAST(ROUND(e.SampleJd - @startJd, 0) AS BIGINT) % @step = 0";
+
+        var sql = $@"
 SELECT e.BodyId, e.SampleJd,
   e.X_AU AS X, e.Y_AU AS Y, e.Z_AU AS Z,
   e.VX_AUPerDay AS Vx, e.VY_AUPerDay AS Vy, e.VZ_AUPerDay AS Vz
@@ -164,30 +171,8 @@ INNER JOIN (
     ISNULL(b.H_AbsMag, 0),
     b.BodyId
 ) AS sb ON sb.BodyId = e.BodyId
-WHERE e.SampleJd >= @startJd AND e.SampleJd <= @endJd"
-: $@"
-SELECT BodyId, SampleJd, X, Y, Z, Vx, Vy, Vz
-FROM (
-  SELECT e.BodyId, e.SampleJd,
-    e.X_AU AS X, e.Y_AU AS Y, e.Z_AU AS Z,
-    e.VX_AUPerDay AS Vx, e.VY_AUPerDay AS Vy, e.VZ_AUPerDay AS Vz,
-    ROW_NUMBER() OVER (PARTITION BY e.BodyId ORDER BY e.SampleJd) AS rn
-  FROM dbo.EphemerisSamples e
-  INNER JOIN (
-    SELECT TOP (@maxBodies) b.BodyId
-    FROM dbo.Bodies b
-    WHERE b.IsActive = 1 AND b.HasEphemeris = 1
-      {hFilter}
-    ORDER BY
-      CASE WHEN b.Source = 'mpcorb' THEN 1 ELSE 0 END,
-      COALESCE(b.SortOrder, 2147483647),
-      CASE WHEN b.H_AbsMag IS NULL THEN 0 ELSE 1 END,
-      ISNULL(b.H_AbsMag, 0),
-      b.BodyId
-  ) AS sb ON sb.BodyId = e.BodyId
-  WHERE e.SampleJd >= @startJd AND e.SampleJd <= @endJd
-) AS ranked
-WHERE rn % @step = 1";
+WHERE e.SampleJd >= @startJd AND e.SampleJd <= @endJd
+  {stepFilter}";
 
         var sqlParams = new List<object>
         {
@@ -195,11 +180,12 @@ WHERE rn % @step = 1";
             new SqlParameter("@endJd",     endJd),
             new SqlParameter("@maxBodies", Math.Max(1, maxBodies ?? int.MaxValue)),
         };
-        if (hMax.HasValue) sqlParams.Add(new SqlParameter("@hMax",  hMax.Value));
-        if (step > 1)      sqlParams.Add(new SqlParameter("@step",  step));
+        if (hMax.HasValue) sqlParams.Add(new SqlParameter("@hMax", hMax.Value));
+        if (step > 1)      sqlParams.Add(new SqlParameter("@step", step));
 
         await using var ctx = await factory.CreateDbContextAsync(cancellationToken);
-        var rows = await ctx.Database.SqlQueryRaw<BulkSampleRow>(sql, sqlParams)
+        ctx.Database.SetCommandTimeout(120);
+        var rows = await ctx.Database.SqlQueryRaw<BulkSampleRow>(sql, [.. sqlParams])
             .OrderBy(r => r.SampleJd).ThenBy(r => r.BodyId)
             .ToListAsync(cancellationToken);
 

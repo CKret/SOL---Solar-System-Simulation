@@ -77,10 +77,11 @@ if (args.Length > 0 && string.Equals(args[0], "import-retry-zeros", StringCompar
 }
 
 if (args.Length > 0 && string.Equals(args[0], "import-samples", StringComparison.OrdinalIgnoreCase)) {
-	// import-samples [--bodies=slug1,slug2,...] [--bodyIds=1,2,3] [--skip-sync] [h_max] [startUtc] [endUtc] [step]
+	// import-samples [--bodies=slug1,slug2,...] [--bodyIds=1,2,3] [--skip-sync] [--debug] [h_max] [startUtc] [endUtc] [step]
 	// --bodies:    comma-separated slug list; bypasses CompletedEphemeris filter for targeted dense imports.
 	// --bodyIds:   comma-separated body ID list; same bypass behaviour as --bodies.
 	// --skip-sync: skip the body catalog sync (saves a few minutes on targeted re-imports).
+	// --debug:     enables debug/timing output for API and DB operations.
 	// h_max:       H magnitude cutoff — imports bodies where H <= h_max OR H IS NULL (authoritative bodies).
 	//              Omit (or omit with --bodies/--bodyIds) to import all bodies with a stored Horizons range.
 	// startUtc/endUtc: optional batch window; each body's range is clipped to its stored min/max.
@@ -91,14 +92,16 @@ if (args.Length > 0 && string.Equals(args[0], "import-samples", StringComparison
 	var syncCatalog = namedArgs.Any(a => string.Equals(a, "--sync-catalog", StringComparison.OrdinalIgnoreCase));
 	var bodiesArg   = namedArgs.FirstOrDefault(a => a.StartsWith("--bodies=",   StringComparison.OrdinalIgnoreCase));
 	var bodyIdsArg  = namedArgs.FirstOrDefault(a => a.StartsWith("--bodyIds=",  StringComparison.OrdinalIgnoreCase));
+	var debugFlag   = namedArgs.Any(a => string.Equals(a, "--debug", StringComparison.OrdinalIgnoreCase));
 
 	var unknownArgs = namedArgs.Where(a =>
 		!string.Equals(a, "--sync-catalog", StringComparison.OrdinalIgnoreCase) &&
 		!a.StartsWith("--bodies=",  StringComparison.OrdinalIgnoreCase) &&
-		!a.StartsWith("--bodyIds=", StringComparison.OrdinalIgnoreCase)).ToArray();
+		!a.StartsWith("--bodyIds=", StringComparison.OrdinalIgnoreCase) &&
+		!string.Equals(a, "--debug", StringComparison.OrdinalIgnoreCase)).ToArray();
 	if (unknownArgs.Length > 0) {
 		Console.Error.WriteLine($"Unknown argument(s): {string.Join(", ", unknownArgs)}");
-		Console.Error.WriteLine("Usage: import-samples [--sync-catalog] [--bodies=slug1,slug2] [--bodyIds=1,2,3] [h_max] [startUtc] [endUtc] [step]");
+		Console.Error.WriteLine("Usage: import-samples [--sync-catalog] [--bodies=slug1,slug2] [--bodyIds=1,2,3] [--debug] [h_max] [startUtc] [endUtc] [step]");
 		return;
 	}
 	IReadOnlyList<string>? slugFilter = bodiesArg is not null
@@ -128,6 +131,8 @@ if (args.Length > 0 && string.Equals(args[0], "import-samples", StringComparison
 	}
 
 	var importer = scope.ServiceProvider.GetRequiredService<IEphemerisSampleImporter>();
+	if (importer is HorizonsEphemerisSampleImporter concreteImporter)
+		concreteImporter.SetDebug(debugFlag);
 	var result = await importer.ImportAsync(hMax, startUtc, endUtc, sampleRate, slugFilter, bodyIdFilter, CancellationToken.None);
 	Console.WriteLine($"Ephemeris import complete. Bodies: {result.BodyCount:N0}, Samples: {result.SampleCount:N0}.");
 	return;

@@ -39,6 +39,9 @@ _publish/
 *.tmp
 *.cache
 *.lock
+*_err.txt
+*_out.txt
+*.lscache
 
 # User secrets (never commit)
 **/secrets.json

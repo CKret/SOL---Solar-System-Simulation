@@ -148,13 +148,18 @@ function getMoonWorldPositionAtTime(moon, timeYears, out = new THREE.Vector3(), 
   const localX = moon.orbitSma * Math.cos(E) - moon.c;
   const localZ = -moon.b * Math.sin(E);
   const incRad = THREE.MathUtils.degToRad(moon.md.inc);
-  const rotatedY = -localZ * Math.sin(incRad);
-  const rotatedZ = localZ * Math.cos(incRad);
+  // Position in the planet's equatorial (moonIncGrp) frame: inclination tilts the XZ orbit
+  const eqX = localX;
+  const eqY = -localZ * Math.sin(incRad);
+  const eqZ =  localZ * Math.cos(incRad);
+  // Transform through the planet's tiltGroup quaternion to get ecliptic-frame offset.
+  // Skip for ecliptic-frame moons (Moon, Nereid) whose inc is already ecliptic-relative.
+  const eqOffset = new THREE.Vector3(eqX, eqY, eqZ);
+  if (moon.parentPlanet.tiltGroup && moon.md.incRef !== 'ecliptic')
+    eqOffset.applyQuaternion(moon.parentPlanet.tiltGroup.quaternion);
   if (parentWorldPos) out.copy(parentWorldPos);
   else getPlanetScenePositionAtTime(moon.parentPlanet, timeYears, out);
-  out.x += localX;
-  out.y += rotatedY;
-  out.z += rotatedZ;
+  out.add(eqOffset);
   return out;
 }
 
@@ -1411,6 +1416,70 @@ function createEarthTravelMarker(radius) {
   return group;
 }
 
+function injectOccluderShadow(mat, nSlots, cacheKey) {
+  const u = {};
+  for (let i = 0; i < nSlots; i++) {
+    u[`u_occ${i}Pos`] = { value: new THREE.Vector3(0, 1e9, 0) };
+    u[`u_occ${i}R`]   = { value: 0.0 };
+  }
+  u.u_occPlanetCtr = { value: new THREE.Vector3() };
+  u.u_occPlanetR   = { value: 1.0 };
+  const prevOBC = mat.onBeforeCompile;
+  const prevKey = mat.customProgramCacheKey.bind(mat);
+  mat.onBeforeCompile = shader => {
+    if (prevOBC) prevOBC(shader);
+    Object.assign(shader.uniforms, u);
+    if (!shader.vertexShader.includes('vOccWorldNormal')) {
+      shader.vertexShader = 'varying vec3 vOccWorldNormal;\n' + shader.vertexShader;
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <project_vertex>',
+        '#include <project_vertex>\nvOccWorldNormal = normalize(mat3(modelMatrix) * normal);'
+      );
+    }
+    if (!shader.fragmentShader.includes('vOccWorldNormal')) {
+      const decls = Array.from({length: nSlots}, (_, i) =>
+        `uniform vec3 u_occ${i}Pos; uniform float u_occ${i}R;`
+      ).join('\n') + '\nuniform vec3 u_occPlanetCtr; uniform float u_occPlanetR;';
+      shader.fragmentShader = 'varying vec3 vOccWorldNormal;\n' + decls + '\n' + shader.fragmentShader;
+    }
+    let tests = '';
+    for (let i = 0; i < nSlots; i++) {
+      tests += `
+      if (u_occ${i}R > 0.0) {
+        vec3  _toO${i} = u_occ${i}Pos - _occPos;
+        float _pr${i}  = dot(_toO${i}, _occToSun);
+        if (_pr${i} > -u_occ${i}R * 1.5) {
+          float _pf${i} = smoothstep(-u_occ${i}R * 0.5, u_occ${i}R * 1.5, _pr${i});
+          float _pd${i} = length(_toO${i} - _pr${i} * _occToSun);
+          float _s${i}  = (1.0 - smoothstep(u_occ${i}R * 0.8, u_occ${i}R * 3.5, _pd${i})) * _pf${i};
+          _occF *= 1.0 - _s${i} * 0.65;
+        }
+      }`;
+    }
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <dithering_fragment>',
+      `{ vec3 _occPos   = u_occPlanetCtr + u_occPlanetR * normalize(vOccWorldNormal);
+         vec3 _occToSun = normalize(-_occPos);
+         float _occF    = 1.0;
+         ${tests}
+         gl_FragColor.rgb *= _occF; }
+      #include <dithering_fragment>`
+    );
+  };
+  mat.customProgramCacheKey = () => (prevKey ? prevKey() + '_' : '') + cacheKey + '_' + nSlots;
+  mat.userData.occluderUniforms    = u;
+  mat.userData.occluderCount       = nSlots;
+  return u;
+}
+
+const _PLANET_MOON_OCC = {
+  MARS:    ['Phobos',  'Deimos'],
+  JUPITER: ['Io',      'Europa',  'Ganymede', 'Callisto'],
+  SATURN:  ['Titan',   'Rhea',    'Dione',    'Tethys'],
+  URANUS:  ['Titania', 'Oberon',  'Ariel',    'Umbriel'],
+  NEPTUNE: ['Triton'],
+};
+
 for (const d of PD) {
   const b = d.sma * Math.sqrt(1 - d.ecc*d.ecc);
   const c = d.sma * d.ecc; // focus offset
@@ -1451,6 +1520,10 @@ for (const d of PD) {
           nightMap: { value: tex }, // replaced when night texture loads
           sunDir:   { value: new THREE.Vector3(1, 0, 0) },
           opacity:  { value: 1.0 },
+          moonPos:  { value: new THREE.Vector3(0, 1e9, 0) },
+          moonR:    { value: 0.0 },
+          earthCtr: { value: new THREE.Vector3() },
+          earthR:   { value: d.r },
         },
         vertexShader: `
           varying vec3 vWorldNormal;
@@ -1466,6 +1539,10 @@ for (const d of PD) {
           uniform sampler2D nightMap;
           uniform vec3 sunDir;
           uniform float opacity;
+          uniform vec3 moonPos;
+          uniform float moonR;
+          uniform vec3 earthCtr;
+          uniform float earthR;
           varying vec3 vWorldNormal;
           varying vec2 vUv;
           void main() {
@@ -1475,13 +1552,77 @@ for (const d of PD) {
             vec3 nightRgb = texture2D(nightMap, vUv).rgb;
             float diffuse = 0.22 + 0.78 * clamp(d, 0.0, 1.0);
             vec3 col = mix(nightRgb * 1.5, dayRgb * diffuse, t);
+            if (moonR > 0.0) {
+              vec3 _fPos  = earthCtr + earthR * normalize(vWorldNormal);
+              vec3 _toSun = normalize(-_fPos);
+              vec3 _oc    = _fPos - moonPos;
+              float _b    = dot(_oc, _toSun);
+              if (-_b > 0.0) {
+                float _perp = sqrt(max(0.0, dot(_oc, _oc) - _b * _b));
+                float _sf   = 1.0 - smoothstep(moonR * 0.7, moonR * 2.5, _perp);
+                if (_sf > 0.0) col *= 1.0 - _sf * 0.65;
+              }
+            }
             gl_FragColor = vec4(col, opacity);
           }
         `,
         transparent: true,
       })
     : new THREE.MeshPhongMaterial({ map:tex, shininess: d.name==='JUPITER'||d.name==='SATURN' ? 8 : 15 });
+  if (d.name === 'SATURN') {
+    const _satRU = {
+      satRingTex:    { value: PLANET_TEX.saturnRing },
+      satRingInner:  { value: d.r * 1.11 },
+      satRingOuter:  { value: d.r * 2.34 },
+      satRingNormal: { value: new THREE.Vector3(0, 1, 0) },
+      saturnWPos:    { value: new THREE.Vector3() },
+    };
+    mat.onBeforeCompile = shader => {
+      Object.assign(shader.uniforms, _satRU);
+      shader.vertexShader = 'varying vec3 vSatBodyWPos;\n' + shader.vertexShader;
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <project_vertex>',
+        '#include <project_vertex>\nvSatBodyWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;'
+      );
+      shader.fragmentShader = [
+        'varying vec3 vSatBodyWPos;',
+        'uniform sampler2D satRingTex;',
+        'uniform float satRingInner,satRingOuter;',
+        'uniform vec3 satRingNormal,saturnWPos;',
+      ].join('\n') + '\n' + shader.fragmentShader;
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <dithering_fragment>',
+        `{ vec3 _rel    = vSatBodyWPos - saturnWPos;
+           vec3 _toSun  = normalize(-vSatBodyWPos);
+           float _denom = dot(_toSun, satRingNormal);
+           if (abs(_denom) > 0.0001) {
+             float _t = -dot(_rel, satRingNormal) / _denom;
+             if (_t > 0.02) {
+               vec3 _hitRel = _rel + _t * _toSun;
+               float _dist  = length(_hitRel);
+               if (_dist >= satRingInner && _dist <= satRingOuter) {
+                 float _u = clamp((_dist - satRingInner) / (satRingOuter - satRingInner), 0.0, 1.0);
+                 float _ef = smoothstep(0.0, 0.018, _u) * smoothstep(1.0, 0.982, _u);
+                 float _a  = texture2D(satRingTex, vec2(_u, 0.5)).a * _ef;
+                 gl_FragColor.rgb *= (1.0 - _a * 0.28);
+               }
+             }
+           }
+           float _cosT = abs(dot(normalize(vNormal), normalize(-vViewPosition)));
+           gl_FragColor.rgb *= mix(0.58, 1.0, pow(_cosT, 0.40)); }
+        #include <dithering_fragment>`
+      );
+    };
+    mat.customProgramCacheKey = () => 'saturn-ring-body-shadow';
+    mat.userData.satRingUniforms = _satRU;
+  }
+  const _occMoons = _PLANET_MOON_OCC[d.name];
+  if (_occMoons) {
+    injectOccluderShadow(mat, _occMoons.length, d.name);
+    mat.userData.occluderMoonNames = _occMoons;
+  }
   const mesh = new THREE.Mesh(new THREE.SphereGeometry(d.r, 40, 40), mat);
+  mesh.frustumCulled = false;
   if (d.name === 'EARTH') {
     const orientationMarker = createEarthOrientationMarker(d.r);
     orientationMarker.visible = false;
@@ -1686,6 +1827,7 @@ self.onmessage=function(e){
         depthWrite: false, shininess: 0, specular: 0x000000,
       })
     );
+    cloudMeshB.frustumCulled = false;
 
     // ── Crossfade state ────────────────────────────────────────────────────
     const _canA = cloudCanvas,  _ctxA = cloudCtx,  _texA = cloudTex;
@@ -1701,6 +1843,7 @@ self.onmessage=function(e){
         depthWrite: false, shininess: 0, specular: 0x000000,
       })
     );
+    cloudMesh.frustumCulled = false;
 
     cloudMesh.userData.cloudMeshB = cloudMeshB;
     cloudMesh.material.map = _texA;
@@ -1870,8 +2013,33 @@ self.onmessage=function(e){
       // Uses radial UV geometry so strip photo textures map correctly (u=inner→outer).
       const ring = new THREE.Mesh(makeRadialRingGeometry(d.r*1.11, d.r*2.34, 256, 1), ringMat);
       ring.rotation.x = Math.PI / 2;
+      ring.frustumCulled = false;
       ringGrp.add(ring);
       queuePhotoSwap('saturnRing', () => ringMat);
+      const _ringBodyU = { satBodyPos: { value: new THREE.Vector3() }, satBodyR: { value: d.r } };
+      ringMat.onBeforeCompile = shader => {
+        Object.assign(shader.uniforms, _ringBodyU);
+        shader.vertexShader = 'varying vec3 vRingWPos;\n' + shader.vertexShader;
+        shader.vertexShader = shader.vertexShader.replace(
+          '#include <project_vertex>',
+          '#include <project_vertex>\nvRingWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;'
+        );
+        shader.fragmentShader = 'varying vec3 vRingWPos;\nuniform vec3 satBodyPos;\nuniform float satBodyR;\n' + shader.fragmentShader;
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <dithering_fragment>',
+          `{ vec3 _toSun = normalize(-vRingWPos);
+             vec3 _oc    = vRingWPos - satBodyPos;
+             float _b    = dot(_oc, _toSun);
+             if (-_b > 0.0) {
+               float _perp = sqrt(max(0.0, dot(_oc, _oc) - _b * _b));
+               float _sf   = 1.0 - smoothstep(satBodyR * 0.92, satBodyR, _perp);
+               if (_sf > 0.0) gl_FragColor.rgb *= 1.0 - _sf * 0.88;
+             } }
+          #include <dithering_fragment>`
+        );
+      };
+      ringMat.customProgramCacheKey = () => 'saturn-ring-body-occ';
+      ringGrp.userData.ringBodyU = _ringBodyU;
     } else {
       // Uranus: simple tilted ring
       // Uranus: narrow dark rings (epsilon, delta, gamma, eta, beta, alpha, 4, 5, 6)
@@ -1882,6 +2050,7 @@ self.onmessage=function(e){
       });
       const ring = new THREE.Mesh(new THREE.RingGeometry(d.r*d.ri, d.r*d.ro, 192, 1), uMat);
       ring.rotation.x = Math.PI / 2;
+      ring.frustumCulled = false;
       ringGrp.add(ring);
     }
 
@@ -1927,7 +2096,7 @@ const jupiterPlanet = planets.find(p => p.d.name === 'JUPITER');
 // r = visual radius in scene units
 const MOON_DATA = [
   // ── Earth ──────────────────────────────────────────────────────────────────
-  { planet:'EARTH',   name:'Moon',      sma:2.8,  period:0.07480263, ecc:0.055, inc:5.1,  r:0.22, color:0xAAAAAA, phaseDeg:222.49, tidalLock:true, tidalYawDeg:-90, tidalPitchDeg:-10, tidalRollDeg:0 },
+  { planet:'EARTH',   name:'Moon',      sma:2.8,  period:0.07480263, ecc:0.055, inc:5.1,  r:0.22, color:0xAAAAAA, phaseDeg:222.49, tidalLock:true, tidalYawDeg:-90, tidalPitchDeg:-10, tidalRollDeg:0, incRef:'ecliptic' },
 
   // ── Mars ───────────────────────────────────────────────────────────────────
   { planet:'MARS',    name:'Phobos',    sma:1.4,  period:0.000865,ecc:0.015, inc:1.1,  r:0.06, color:0x997755 },
@@ -1995,7 +2164,7 @@ const MOON_DATA = [
 
   // ── Neptune (16 moons) ─────────────────────────────────────────────────────
   { planet:'NEPTUNE', name:'Triton',    sma:5.5,  period:0.01609, ecc:0.000, inc:157., r:0.22, color:0xAABBCC },
-  { planet:'NEPTUNE', name:'Nereid',    sma:56.0, period:0.99970, ecc:0.751, inc:7.23, r:0.08, color:0x889977 },
+  { planet:'NEPTUNE', name:'Nereid',    sma:56.0, period:0.99970, ecc:0.751, inc:7.23, r:0.08, color:0x889977, incRef:'ecliptic' },
   { planet:'NEPTUNE', name:'Proteus',   sma:3.5,  period:0.00292, ecc:0.000, inc:0.04, r:0.09, color:0x777788 },
   { planet:'NEPTUNE', name:'Larissa',   sma:2.9,  period:0.00219, ecc:0.001, inc:0.20, r:0.06, color:0x778877 },
   { planet:'NEPTUNE', name:'Galatea',   sma:2.6,  period:0.00188, ecc:0.000, inc:0.05, r:0.05, color:0x778877 },
@@ -2249,7 +2418,10 @@ for (const md of MOON_DATA) {
   // so the planet's axial rotation doesn't carry the moon around with it
   const moonIncGrp = new THREE.Group();
   moonIncGrp.rotation.x = THREE.MathUtils.degToRad(md.inc);
-  parentPlanet.incGrp.add(moonIncGrp);
+  // ecliptic-frame moons (Moon, Nereid) have inc relative to the ecliptic; parent to incGrp.
+  // All others have inc relative to the planet's equatorial plane; parent to tiltGroup.
+  const _moonParentGrp = md.incRef === 'ecliptic' ? parentPlanet.incGrp : parentPlanet.tiltGroup;
+  _moonParentGrp.add(moonIncGrp);
 
   // Orbit ring (visible in solar mode when zoomed in)
   const moonOrbitLine = new THREE.Line(
@@ -2266,6 +2438,7 @@ for (const md of MOON_DATA) {
     new THREE.SphereGeometry(md.r, 16, 16),
     moonMat
   );
+  moonMesh.frustumCulled = false;
   if (md.name === 'Moon') queuePhotoSwap('moon', () => moonMat);
   moonIncGrp.add(moonMesh);
 
@@ -2303,6 +2476,9 @@ for (const md of MOON_DATA) {
 
   moons.push(moonObj);
 }
+const _moonByName  = new Map(moons.map(m => [m.md.name, m]));
+const _shadowTmpV  = new THREE.Vector3();
+const _shadowTmpQ  = new THREE.Quaternion();
 
 // ── Dwarf planets ─────────────────────────────────────────────────────────────
 // Treated like planets but smaller — included in solar view and focus bar
@@ -2894,7 +3070,7 @@ function updateComets() {
       cm.nucleus.position.copy(cm.incGrp.worldToLocal(_cometWorldPos));
     }
     cm.orbitLine.material.color.setHex(getOrbitLineColorHex(cm));
-    cm.orbitLine.visible = isCometOrbitVisibleAtTime(cm) && orbitsOn && (viewMode === 'solar');
+    cm.orbitLine.visible = isCometOrbitVisibleAtTime(cm) && orbitsOn && probesOn && (viewMode === 'solar');
 
     if (cm.fragments) {
       const showFragments = isCometOnTerminalApproach(cm);
@@ -3284,6 +3460,32 @@ function getProbeScenePositionAtTime(probe, timeYears, out = new THREE.Vector3()
   return out.copy(pos);
 }
 
+// Walk backward through a probe trajectory, accumulate angular displacement around
+// the Sun (XZ-plane), and return the time at which 360° of arc has been swept.
+// isEphemeris: true → traj entries are {jd,x,y,z}; false → [t,x,y,z] arrays.
+function probeTrail360StartTime(traj, isEphemeris, startSim, endSim) {
+  let totalAngle = 0;
+  let prevAngle = null;
+  for (let i = traj.length - 1; i >= 0; i--) {
+    const t = isEphemeris ? (traj[i].jd - 2451545.0) / 365.25 : traj[i][0];
+    if (t > endSim) continue;
+    if (t < startSim) break;
+    const x = isEphemeris ? traj[i].x : traj[i][1];
+    const z = isEphemeris ? traj[i].z : traj[i][3];
+    if (!Number.isFinite(x) || !Number.isFinite(z)) continue;
+    const angle = Math.atan2(z, x);
+    if (prevAngle !== null) {
+      let da = angle - prevAngle;
+      if (da >  Math.PI) da -= 2 * Math.PI;
+      if (da < -Math.PI) da += 2 * Math.PI;
+      totalAngle += Math.abs(da);
+      if (totalAngle >= 2 * Math.PI) return t;
+    }
+    prevAngle = angle;
+  }
+  return startSim;
+}
+
 function updateProbes() {
   for (const pr of probes) {
     const vd = pr.vd;
@@ -3292,11 +3494,11 @@ function updateProbes() {
 
     // Only show after launch
     const launched = currentYear >= vd.launchYear;
-    pr.mesh.visible = launched && (viewMode === 'solar');
-    pr.glowPt.visible = launched && (viewMode === 'solar') && !realSizeMode;
-    pr.trailLine.visible = launched && (viewMode === 'solar') && orbitsOn;
-    pr.dotLine.visible   = launched && (viewMode === 'solar') && orbitsOn && !realSizeMode;
-    pr.focusReticle.visible = launched && (viewMode === 'solar') && realSizeMode && probeFocused;
+    pr.mesh.visible = launched && (viewMode === 'solar') && probesOn;
+    pr.glowPt.visible = launched && (viewMode === 'solar') && !realSizeMode && probesOn;
+    pr.trailLine.visible = launched && (viewMode === 'solar') && orbitsOn && probesOn;
+    pr.dotLine.visible   = launched && (viewMode === 'solar') && orbitsOn && !realSizeMode && probesOn;
+    pr.focusReticle.visible = launched && (viewMode === 'solar') && realSizeMode && probeFocused && probesOn;
 
     if (!launched) continue;
 
@@ -3348,13 +3550,15 @@ function updateProbes() {
         pr.trailGeo.setDrawRange(0, 0);
         pr.dotGeo.setDrawRange(0, 0);
       } else {
-        const simSpan = Math.max(1e-9, simTime - startSim);
+        const trailStartTime = probeTrail360StartTime(traj, true, startSim, simTime);
+        const simSpan = Math.max(1e-9, simTime - trailStartTime);
         const DOT_STRIDE = 6;
         let n = 0, nd = 0;
         for (let i = 0; i < traj.length; i++) {
           const pt = traj[i];
           const t = (pt.jd - 2451545.0) / 365.25; // JD → simTime
-          const f = Math.max(0, Math.min(1, (t - startSim) / simSpan));
+          if (t < trailStartTime) continue;
+          const f = Math.max(0, Math.min(1, (t - trailStartTime) / simSpan));
           const fade = 0.08 + 0.92 * f;
           pr.trailPos[n*3]=pt.x; pr.trailPos[n*3+1]=pt.y; pr.trailPos[n*3+2]=pt.z;
           pr.trailCol[n*3]=cr*fade; pr.trailCol[n*3+1]=cg*fade; pr.trailCol[n*3+2]=cb*fade;
@@ -3389,19 +3593,20 @@ function updateProbes() {
     const cg = ((vd.color >> 8)  & 0xff) / 255;
     const cb = ( vd.color        & 0xff) / 255;
     const startSim = vd.launchYear - 2000;
-    const simSpan = Math.max(1e-9, simTime - startSim);
+    const trailStartTime = probeTrail360StartTime(traj, false, startSim, simTime);
+    const simSpan = Math.max(1e-9, simTime - trailStartTime);
     const DAILY_STRIDE = 2;             // every other daily = smooth line
     const HOURLY_THRESH = 1.5 / 365.25; // dt < 1.5 days = hourly data
     const DOT_STRIDE = 6;               // dots every 6th daily point
     let n = 0, nd = 0;
     for (let i = 0; i < traj.length; i++) {
       const t = traj[i][0];
-      if (t < startSim || t > simTime) continue;
+      if (t < trailStartTime || t > simTime) continue;
       const dt = i > 0 ? traj[i][0] - traj[i-1][0] : 999;
       const isHourly = dt < HOURLY_THRESH;
       // Line: keep hourly always, daily every other point
       if (!isHourly && (i % DAILY_STRIDE !== 0)) continue;
-      const f = Math.max(0, Math.min(1, (t - startSim) / simSpan));
+      const f = Math.max(0, Math.min(1, (t - trailStartTime) / simSpan));
       const fade = 0.08 + 0.92 * f;
       pr.trailPos[n*3]   = Number.isFinite(traj[i][1]) ? traj[i][1] : 0;
       pr.trailPos[n*3+1] = Number.isFinite(traj[i][2]) ? traj[i][2] : 0;
@@ -3459,8 +3664,9 @@ scene.add(sunTrailLine);
 
 let viewMode  = 'solar'; // 'solar' | 'vortex'
 let paused    = false;
-let trailsOn  = true;
-let orbitsOn  = true;
+let trailsOn   = true;
+let orbitsOn   = true;
+let probesOn   = true;
 let constellationsOn = true;
 const DEBUG_FLAGS = {
   earthOrientationMarker: false,
@@ -3974,7 +4180,7 @@ function setView(mode) {
   // Orbit rings only in solar mode
   for (const p of planets) p.orbitLine.visible = orbitsOn && (mode==='solar');
   for (const d of dwarfs) d.orbitLine.visible = orbitsOn && (mode==='solar');
-  for (const c of comets) c.orbitLine.visible = orbitsOn && (mode==='solar');
+  for (const c of comets) c.orbitLine.visible = orbitsOn && probesOn && (mode==='solar');
   for (const m of moons) m.moonOrbitLine.visible = orbitsOn && (mode==='solar');
   // Trails only relevant in vortex mode
   document.getElementById('trails-btn').style.display = mode === 'solar' ? 'none' : '';
@@ -4109,8 +4315,20 @@ document.getElementById('orbits-btn').addEventListener('click', ()=>{
   document.getElementById('orbits-btn').textContent=orbitsOn?'ORBITS ON':'ORBITS OFF';
   for(const p of planets) p.orbitLine.visible = orbitsOn && (viewMode==='solar');
   for(const d of dwarfs) d.orbitLine.visible = orbitsOn && (viewMode==='solar');
-  for(const c of comets) c.orbitLine.visible = orbitsOn && (viewMode==='solar');
+  for(const c of comets) c.orbitLine.visible = orbitsOn && probesOn && (viewMode==='solar');
   for(const m of moons) m.moonOrbitLine.visible = orbitsOn && (viewMode==='solar');
+});
+document.getElementById('probes-btn').addEventListener('click', () => {
+  probesOn = !probesOn;
+  document.getElementById('probes-btn').textContent = probesOn ? 'PROBES ON' : 'PROBES OFF';
+  for (const pr of probes) {
+    const launched = (2000 + simTime) >= pr.vd.launchYear;
+    pr.mesh.visible      = launched && (viewMode === 'solar') && probesOn;
+    pr.glowPt.visible    = launched && (viewMode === 'solar') && !realSizeMode && probesOn;
+    pr.trailLine.visible = launched && (viewMode === 'solar') && orbitsOn && probesOn;
+    pr.dotLine.visible   = launched && (viewMode === 'solar') && orbitsOn && !realSizeMode && probesOn;
+  }
+  for (const c of comets) c.orbitLine.visible = orbitsOn && probesOn && (viewMode === 'solar');
 });
 document.getElementById('const-btn').addEventListener('click', () => {
   constellationsOn = !constellationsOn;
@@ -4448,7 +4666,7 @@ function rotateFocusedView(dx, dy) {
   if (geoLock && focusMesh) {
     rotateGeoLockView(dx, dy);
   } else if (lookAtBodyMesh && focusMesh) {
-    camTheta += dx * 0.005;
+    camTheta -= dx * 0.005;
     camPhi   += dy * 0.005;
     targetPhi = camPhi;
   } else if (focusMesh) {
@@ -6015,7 +6233,10 @@ function animate(){
     const _moonEph = (moonEphemerisStable && canUseBodyEphemeris(m.ephemerisBodyId, getMoonOrbitPeriodYears(m), simTime))
       ? EphemerisSystem.getPosition(m.ephemerisBodyId, simTime)
       : null;
-    m.moonIncGrp.position.copy(m.parentPlanet.tiltGroup.position);
+    if (m.md.incRef === 'ecliptic')
+      m.moonIncGrp.position.copy(m.parentPlanet.tiltGroup.position);
+    else
+      m.moonIncGrp.position.set(0, 0, 0);
     if (_moonEph && getMoonEphemerisLocalPosition(m, simTime, _moonLocalPos)) {
       m.moonMesh.position.copy(_moonLocalPos);
     } else {
@@ -6061,6 +6282,55 @@ function animate(){
   // Constellation lines only visible when zoomed out (not in solar view)
   constLineMesh.visible = constellationsOn; // respect toggle
   sunTrailLine.visible = trailsOn && (viewMode !== 'solar');
+
+  // ── Shadow uniforms ────────────────────────────────────────────────────────
+  for (const p of planets) {
+    const satRU = p.mesh.material.userData.satRingUniforms;
+    if (satRU) {
+      p.tiltGroup.getWorldPosition(_shadowTmpV);
+      satRU.saturnWPos.value.copy(_shadowTmpV);
+      p.tiltGroup.getWorldQuaternion(_shadowTmpQ);
+      _shadowTmpV.set(0, 1, 0).applyQuaternion(_shadowTmpQ).normalize();
+      satRU.satRingNormal.value.copy(_shadowTmpV);
+      const ringBodyU = p.ring && p.ring.userData.ringBodyU;
+      if (ringBodyU) {
+        p.tiltGroup.getWorldPosition(_shadowTmpV);
+        ringBodyU.satBodyPos.value.copy(_shadowTmpV);
+        ringBodyU.satBodyR.value = p.d.r * p.mesh.scale.x;
+      }
+    }
+  }
+  for (const p of planets) {
+    if (p.d.name === 'EARTH') {
+      const eu = p.mesh.material.uniforms;
+      if (eu && eu.moonPos) {
+        p.mesh.getWorldPosition(_shadowTmpV);
+        eu.earthCtr.value.copy(_shadowTmpV);
+        const _moon = _moonByName.get('Moon');
+        if (_moon) {
+          _moon.moonMesh.getWorldPosition(_shadowTmpV);
+          eu.moonPos.value.copy(_shadowTmpV);
+          eu.moonR.value = _moon.md.r * _moon.moonMesh.scale.x;
+        }
+      }
+    }
+  }
+  for (const p of planets) {
+    const pu    = p.mesh.material.userData.occluderUniforms;
+    const names = p.mesh.material.userData.occluderMoonNames;
+    if (!pu || !names) continue;
+    p.mesh.getWorldPosition(_shadowTmpV);
+    pu.u_occPlanetCtr.value.copy(_shadowTmpV);
+    pu.u_occPlanetR.value = p.d.r * p.mesh.scale.x;
+    for (let i = 0; i < names.length; i++) {
+      const moon = _moonByName.get(names[i]);
+      if (moon) {
+        moon.moonMesh.getWorldPosition(_shadowTmpV);
+        pu[`u_occ${i}Pos`].value.copy(_shadowTmpV);
+        pu[`u_occ${i}R`].value = moon.md.r * moon.moonMesh.scale.x;
+      }
+    }
+  }
 
   // ── Analytical trails (smooth curves, computed from exact past positions) ──
   computeAnalyticTrails();
@@ -6570,7 +6840,7 @@ function slugify(name) {
     }
 
     camR = targetR;
-    for (const c of comets) c.orbitLine.visible = isCometAvailableAtTime(c) && orbitsOn && (viewMode==='solar');
+    for (const c of comets) c.orbitLine.visible = isCometAvailableAtTime(c) && orbitsOn && probesOn && (viewMode==='solar');
   }
 
   function focusByBodyId(bodyId) {

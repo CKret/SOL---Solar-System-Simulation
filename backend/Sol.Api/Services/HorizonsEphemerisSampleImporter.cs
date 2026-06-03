@@ -9,12 +9,29 @@ namespace Sol.Api.Services;
 
 public sealed partial class HorizonsEphemerisSampleImporter(
     HttpClient httpClient,
-    IDbContextFactory<SolWriteDbContext> dbContextFactory) : IEphemerisSampleImporter
+    IDbContextFactory<SolWriteDbContext> dbContextFactory,
+    bool debug = false) : IEphemerisSampleImporter
 {
     private const string HorizonsApiBase  = "https://ssd.jpl.nasa.gov/api/horizons.api";
     private const string EphemerisFrame   = "Ecliptic J2000 / Solar System Barycenter";
     private const string EphemerisSource  = "JPL Horizons API";
 
+    // Configurable maximum lines per request for chunking
+    private static int _maxLinesPerRequest = 40000;
+    public static int MaxLinesPerRequest
+    {
+        get => _maxLinesPerRequest;
+        set => _maxLinesPerRequest = value > 0 ? value : 1;
+    }
+
+
+    // Debug flag for timing logs
+    private bool _debug = debug;
+
+    public void SetDebug(bool debug)
+    {
+        _debug = debug;
+    }
     // ── Public interface ──────────────────────────────────────────────────────
 
     public async Task<EphemerisSampleImportResult> ImportAsync(
@@ -42,7 +59,7 @@ public sealed partial class HorizonsEphemerisSampleImporter(
             bodies = await LoadBodiesForEphemerisAsync(hMax, cancellationToken);
             filterDesc = $"hMax={hMax?.ToString() ?? "none"}";
         }
-        Console.WriteLine($"Importing ephemeris for {bodies.Count:N0} bodies ({filterDesc}, parallelism=2x1).");
+        Console.WriteLine($"Importing ephemeris for {bodies.Count:N0} bodies ({filterDesc}, parallelism=2x2).");
 
         int totalBodies = 0, totalSamples = 0, completed = 0;
         var step = sampleRateOverride ?? TimeSpan.FromDays(1);
@@ -72,7 +89,7 @@ public sealed partial class HorizonsEphemerisSampleImporter(
 
                     int inserted = 0;
                     foreach (var window in EphemerisImportSourcePolicy.GetWindowsForTarget(slug, effectiveStart, effectiveEnd, sampleRateOverride)) {
-                        int windowInserted = await ImportBodyChunksAsync(bodyId, slug, jplId, window.StartJd, window.EndJd, window.Step, ct);
+                        int windowInserted = await ImportBodyChunksAsync(bodyId, slug, jplId, window.StartJd, window.EndJd, window.Step, ct, _debug);
                         if (windowInserted > 0 && inserted == 0) {
                             await using var mCtx = await dbContextFactory.CreateDbContextAsync(ct);
                             await MarkHasEphemerisAsync(mCtx, bodyId, ct);
@@ -124,7 +141,8 @@ public sealed partial class HorizonsEphemerisSampleImporter(
     private async Task<int> ImportBodyChunksAsync(
         int bodyId, string slug, string horizonsCommand,
         double startJd, double endJd, TimeSpan step,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool debug)
     {
         IReadOnlyCollection<(double Start, double End)> loggedChunks;
         await using (var loadCtx = await dbContextFactory.CreateDbContextAsync(ct))
@@ -136,7 +154,7 @@ public sealed partial class HorizonsEphemerisSampleImporter(
 
         await Parallel.ForEachAsync(
             allChunks.Select((c, i) => (c.Start, c.End, Index: i + 1)),
-            new ParallelOptions { MaxDegreeOfParallelism = 1, CancellationToken = ct },
+            new ParallelOptions { MaxDegreeOfParallelism = 2, CancellationToken = ct },
             async (item, innerCt) =>
             {
                 if (IsChunkLogged(loggedChunks, item.Start, item.End)) return;
@@ -146,7 +164,14 @@ public sealed partial class HorizonsEphemerisSampleImporter(
                 await using var ctx = await dbContextFactory.CreateDbContextAsync(innerCt);
                 await ctx.Database.OpenConnectionAsync(innerCt);
 
-                var fetch = await FetchAndInsertChunkAsync(ctx, bodyId, slug, horizonsCommand, item.Start, item.End, step, innerCt);
+                var fetchStart = DateTime.UtcNow;
+                var fetch = await FetchAndInsertChunkAsync(ctx, bodyId, slug, horizonsCommand, item.Start, item.End, step, innerCt, debug);
+                var fetchEnd = DateTime.UtcNow;
+                if (debug)
+                {
+                    var fetchMs = (fetchEnd - fetchStart).TotalMilliseconds;
+                    Console.WriteLine($"      [DEBUG] Fetch+Insert for chunk took {fetchMs:N0} ms");
+                }
                 if (fetch.Inserted < 0) return;
 
                 var logStart = fetch.EffStart;
@@ -165,7 +190,7 @@ public sealed partial class HorizonsEphemerisSampleImporter(
                             if (retryStart >= retryEnd) break;
 
                             await Task.Delay(150, innerCt);
-                            var rf = await FetchAndInsertChunkAsync(ctx, bodyId, slug, horizonsCommand, retryStart, retryEnd, step, innerCt);
+                            var rf = await FetchAndInsertChunkAsync(ctx, bodyId, slug, horizonsCommand, retryStart, retryEnd, step, innerCt, debug);
 
                             if (rf.Inserted < 0) { await Task.Delay(500, innerCt); continue; }
                             shrink++;
@@ -210,10 +235,18 @@ public sealed partial class HorizonsEphemerisSampleImporter(
         SolWriteDbContext ctx,
         int bodyId, string slug, string horizonsCommand,
         double winStart, double winEnd, TimeSpan step,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool debug)
     {
         var requestUri = BuildHorizonsVectorsUri(horizonsCommand, winStart, winEnd, step);
+        var httpStart = DateTime.UtcNow;
         using var response = await httpClient.GetAsync(requestUri, ct);
+        var httpEnd = DateTime.UtcNow;
+        if (debug)
+        {
+            var httpMs = (httpEnd - httpStart).TotalMilliseconds;
+            Console.WriteLine($"      [DEBUG] HTTP fetch took {httpMs:N0} ms");
+        }
 
         if (!response.IsSuccessStatusCode)
             return new(-1, winStart, winEnd);
@@ -225,6 +258,11 @@ public sealed partial class HorizonsEphemerisSampleImporter(
             var errText  = errEl.GetString() ?? "";
             var adjStart = winStart;
             var adjEnd   = winEnd;
+
+            // Debug output for rejected chunk
+            int expectedLines = (int)Math.Round((winEnd - winStart) / step.TotalDays) + 1;
+            Console.WriteLine($"  [DEBUG] Horizons API error for {slug}: JD{winStart:F0}..JD{winEnd:F0} (step={step}, expected lines={expectedLines}, MaxLinesPerRequest={MaxLinesPerRequest})");
+            Console.WriteLine($"  [DEBUG] Error message: {errText}");
 
             var priorM = System.Text.RegularExpressions.Regex.Match(errText,
                 @"prior to A\.D\.\s+(\d+)-([A-Z]{3})-(\d+)\s+([\d:.]+)");
@@ -244,7 +282,7 @@ public sealed partial class HorizonsEphemerisSampleImporter(
 
             if (adjStart < adjEnd && (adjStart > winStart || adjEnd < winEnd)) {
                 Console.WriteLine($"    {slug} boundary adjusted JD{adjStart:F0}..JD{adjEnd:F0}");
-                return await FetchAndInsertChunkAsync(ctx, bodyId, slug, horizonsCommand, adjStart, adjEnd, step, ct);
+                return await FetchAndInsertChunkAsync(ctx, bodyId, slug, horizonsCommand, adjStart, adjEnd, step, ct, debug);
             }
             return new(0, winStart, winEnd);
         }
@@ -257,13 +295,20 @@ public sealed partial class HorizonsEphemerisSampleImporter(
             var record = PickBestApparitionRecord(resultText, (winStart + winEnd) / 2.0);
             if (record == null) return new(0, winStart, winEnd);
             Console.WriteLine($"    {slug} → apparition record {record}");
-            return await FetchAndInsertChunkAsync(ctx, bodyId, slug, $"{record};", winStart, winEnd, step, ct);
+            return await FetchAndInsertChunkAsync(ctx, bodyId, slug, $"{record};", winStart, winEnd, step, ct, debug);
         }
 
         if (resultText.Contains("$$SOE")) {
             var samples = ParseHorizonsVectorCsv(bodyId, resultText, slug);
             if (samples.Count > 0) {
+                var insertStart = DateTime.UtcNow;
                 await InsertSamplesAsync(ctx, samples, ct);
+                var insertEnd = DateTime.UtcNow;
+                if (debug)
+                {
+                    var insertMs = (insertEnd - insertStart).TotalMilliseconds;
+                    Console.WriteLine($"      [DEBUG] DB insert/merge took {insertMs:N0} ms");
+                }
                 return new(samples.Count, winStart, winEnd);
             }
         }
@@ -345,7 +390,7 @@ public sealed partial class HorizonsEphemerisSampleImporter(
 
     private static IEnumerable<(double Start, double End)> ChunkRange(double startJd, double endJd, TimeSpan step)
     {
-        const int maxLinesPerRequest = 18250;
+        int maxLinesPerRequest = MaxLinesPerRequest;
         double windowDays  = maxLinesPerRequest * step.TotalDays;
         double windowStart = startJd;
         while (windowStart < endJd) {
@@ -463,22 +508,30 @@ public sealed partial class HorizonsEphemerisSampleImporter(
         LoadBodiesForEphemerisAsync(double? hMax, CancellationToken ct)
     {
         await using var ctx = await dbContextFactory.CreateDbContextAsync(ct);
+        var oldTimeout = ctx.Database.GetCommandTimeout();
+        ctx.Database.SetCommandTimeout(300); // 5 minutes
+        try
+        {
+            var query = ctx.Bodies.Where(b =>
+                b.IsActive && !b.CompletedEphemeris &&
+                b.JplHorizonsId != null && b.EphemerisMinJD != null && b.EphemerisMaxJD != null);
 
-        var query = ctx.Bodies.Where(b =>
-            b.IsActive && !b.CompletedEphemeris &&
-            b.JplHorizonsId != null && b.EphemerisMinJD != null && b.EphemerisMaxJD != null);
+            if (hMax.HasValue)
+                query = query.Where(b => b.H_AbsMag == null || b.H_AbsMag <= hMax.Value);
+            else
+                query = query.Where(b => b.H_AbsMag == null && b.Source != "mpcorb");
 
-        if (hMax.HasValue)
-            query = query.Where(b => b.H_AbsMag == null || b.H_AbsMag <= hMax.Value);
-        else
-            query = query.Where(b => b.H_AbsMag == null && b.Source != "mpcorb");
+            var rows = await query
+                .OrderBy(b => b.H_AbsMag).ThenBy(b => b.Slug)
+                .Select(b => new { b.BodyId, b.Slug, b.JplHorizonsId, b.EphemerisMinJD, b.EphemerisMaxJD })
+                .ToListAsync(ct);
 
-        var rows = await query
-            .OrderBy(b => b.H_AbsMag).ThenBy(b => b.Slug)
-            .Select(b => new { b.BodyId, b.Slug, b.JplHorizonsId, b.EphemerisMinJD, b.EphemerisMaxJD })
-            .ToListAsync(ct);
-
-        return rows.ConvertAll(r => (r.BodyId, r.Slug, r.JplHorizonsId!, r.EphemerisMinJD!.Value, r.EphemerisMaxJD!.Value));
+            return rows.ConvertAll(r => (r.BodyId, r.Slug, r.JplHorizonsId!, r.EphemerisMinJD!.Value, r.EphemerisMaxJD!.Value));
+        }
+        finally
+        {
+            ctx.Database.SetCommandTimeout(oldTimeout);
+        }
     }
 
     private static async Task<List<(double Start, double End)>> LoadLoggedChunksAsync(
