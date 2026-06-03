@@ -43,8 +43,9 @@ _publish/
 *_out.txt
 *.lscache
 
-# User secrets (never commit)
+# User secrets and environment-specific config with secrets (never commit)
 **/secrets.json
+**/appsettings.Production.json
 
 # OS
 .DS_Store
