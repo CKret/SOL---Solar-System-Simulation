@@ -4,6 +4,9 @@ This changelog is derived from the project's git commit messages and is listed n
 
 ## 2026-06-03
 
+### Fixed
+- `82045d2` Moon orbital plane in Kepler mode was always oriented with the ascending node fixed at the vernal equinox, making solar eclipses impossible to replicate analytically. Replaced the static inclination-only tilt with the full 3D Keplerian formula: ascending node Ω precesses at −0.0530°/day (~18.6 yr period), argument of perigee ω precesses at +0.1644°/day (~8.85 yr period), and the Moon's mean longitude is advanced from J2000 elements (`l₀ = 218.32°`, `n = 13.176°/day`). The `moonIncGrp` now uses YXZ Euler order so Ω is applied before inclination, matching the same rotation convention used for planet orbit lines. Ephemeris mode is unaffected.
+
 ### Added
 - `a7dfebb` Probes On/Off toggle button hides or shows all space-probe trails.
 - `a7dfebb` `--debug` flag added to import commands for verbose diagnostic output.
