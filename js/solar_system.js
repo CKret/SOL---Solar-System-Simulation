@@ -3497,7 +3497,7 @@ function updateProbes() {
     pr.mesh.visible = launched && (viewMode === 'solar') && probesOn;
     pr.glowPt.visible = launched && (viewMode === 'solar') && !realSizeMode && probesOn;
     pr.trailLine.visible = launched && (viewMode === 'solar') && orbitsOn && probesOn;
-    pr.dotLine.visible   = launched && (viewMode === 'solar') && orbitsOn && !realSizeMode && probesOn;
+    pr.dotLine.visible   = false;
     pr.focusReticle.visible = launched && (viewMode === 'solar') && realSizeMode && probeFocused && probesOn;
 
     if (!launched) continue;
@@ -3505,9 +3505,8 @@ function updateProbes() {
     // Current position
     const pos = getProbeScenePositionAtTime(pr, simTime, _probePosCurrent);
     if (!pos) {
-      pr.mesh.visible = pr.glowPt.visible = pr.trailLine.visible = pr.dotLine.visible = pr.focusReticle.visible = false;
+      pr.mesh.visible = pr.glowPt.visible = pr.trailLine.visible = pr.focusReticle.visible = false;
       pr.trailGeo.setDrawRange(0, 0);
-      pr.dotGeo.setDrawRange(0, 0);
       continue;
     }
     pr.mesh.position.copy(pos);
@@ -3540,20 +3539,23 @@ function updateProbes() {
     if (vd.ephemerisDriven) {
       const bodyId = vd.bodyId;
       const startSim = vd.launchYear - 2000;
-      const traj = bodyId != null
-        ? EphemerisSystem.getTrajectory(bodyId, startSim, simTime, Math.min(900, pr.PROBE_TRAIL_PTS - 2))
+      // Coarse pass: full history at low density — only used to detect the 360° cutoff.
+      const coarseTraj = bodyId != null
+        ? EphemerisSystem.getTrajectory(bodyId, startSim, simTime, 200)
         : null;
       const cr = ((vd.color >> 16) & 0xff) / 255;
       const cg = ((vd.color >> 8)  & 0xff) / 255;
       const cb = ( vd.color        & 0xff) / 255;
-      if (!traj) {
+      if (!coarseTraj) {
         pr.trailGeo.setDrawRange(0, 0);
         pr.dotGeo.setDrawRange(0, 0);
       } else {
-        const trailStartTime = probeTrail360StartTime(traj, true, startSim, simTime);
+        const trailStartTime = probeTrail360StartTime(coarseTraj, true, startSim, simTime);
+        // Fine pass: dense samples only within the visible 360° arc so all buffer
+        // slots are used for the portion actually drawn, not spread over years of history.
+        const traj = EphemerisSystem.getTrajectory(bodyId, trailStartTime, simTime, pr.PROBE_TRAIL_PTS - 2) || coarseTraj;
         const simSpan = Math.max(1e-9, simTime - trailStartTime);
-        const DOT_STRIDE = 6;
-        let n = 0, nd = 0;
+        let n = 0;
         for (let i = 0; i < traj.length; i++) {
           const pt = traj[i];
           const t = (pt.jd - 2451545.0) / 365.25; // JD → simTime
@@ -3562,12 +3564,6 @@ function updateProbes() {
           const fade = 0.08 + 0.92 * f;
           pr.trailPos[n*3]=pt.x; pr.trailPos[n*3+1]=pt.y; pr.trailPos[n*3+2]=pt.z;
           pr.trailCol[n*3]=cr*fade; pr.trailCol[n*3+1]=cg*fade; pr.trailCol[n*3+2]=cb*fade;
-          if (n % DOT_STRIDE === 0 && nd < pr.PROBE_TRAIL_PTS - 1) {
-            pr.dotPos[nd*3]=pt.x; pr.dotPos[nd*3+1]=pt.y; pr.dotPos[nd*3+2]=pt.z;
-            pr.dotCol[nd*3]=cr*fade; pr.dotCol[nd*3+1]=cg*fade; pr.dotCol[nd*3+2]=cb*fade;
-            pr.dotSiz[nd] = (0.4 + f * 0.8) * (realSizeMode ? PROBE_REAL_DOT_SIZE_SCALE : 1);
-            nd++;
-          }
           n++;
         }
         // Tip at exact current position
@@ -3579,10 +3575,6 @@ function updateProbes() {
         pr.trailGeo.attributes.position.needsUpdate = true;
         pr.trailGeo.attributes.color.needsUpdate = true;
         pr.trailGeo.setDrawRange(0, n);
-        pr.dotGeo.attributes.position.needsUpdate = true;
-        pr.dotGeo.attributes.color.needsUpdate = true;
-        pr.dotGeo.attributes.size.needsUpdate = true;
-        pr.dotGeo.setDrawRange(0, nd);
       }
       continue;
     }
@@ -3597,8 +3589,7 @@ function updateProbes() {
     const simSpan = Math.max(1e-9, simTime - trailStartTime);
     const DAILY_STRIDE = 2;             // every other daily = smooth line
     const HOURLY_THRESH = 1.5 / 365.25; // dt < 1.5 days = hourly data
-    const DOT_STRIDE = 6;               // dots every 6th daily point
-    let n = 0, nd = 0;
+    let n = 0;
     for (let i = 0; i < traj.length; i++) {
       const t = traj[i][0];
       if (t < trailStartTime || t > simTime) continue;
@@ -3614,17 +3605,6 @@ function updateProbes() {
       pr.trailCol[n*3]   = cr * fade;
       pr.trailCol[n*3+1] = cg * fade;
       pr.trailCol[n*3+2] = cb * fade;
-      // Dots: only on daily-spaced points (not hourly) to avoid blob at flybys
-      if (!isHourly && n % DOT_STRIDE === 0) {
-        pr.dotPos[nd*3]   = Number.isFinite(traj[i][1]) ? traj[i][1] : 0;
-        pr.dotPos[nd*3+1] = Number.isFinite(traj[i][2]) ? traj[i][2] : 0;
-        pr.dotPos[nd*3+2] = Number.isFinite(traj[i][3]) ? traj[i][3] : 0;
-        pr.dotCol[nd*3]   = cr * fade;
-        pr.dotCol[nd*3+1] = cg * fade;
-        pr.dotCol[nd*3+2] = cb * fade;
-        pr.dotSiz[nd] = (0.4 + f * 0.8) * (realSizeMode ? PROBE_REAL_DOT_SIZE_SCALE : 1);
-        nd++;
-      }
       n++;
     }
     // Always append the exact interpolated current position so trail and mesh stay in lockstep.
@@ -3642,10 +3622,6 @@ function updateProbes() {
     pr.trailGeo.attributes.position.needsUpdate = true;
     pr.trailGeo.attributes.color.needsUpdate = true;
     pr.trailGeo.setDrawRange(0, n);
-    pr.dotGeo.attributes.position.needsUpdate = true;
-    pr.dotGeo.attributes.color.needsUpdate = true;
-    pr.dotGeo.attributes.size.needsUpdate = true;
-    pr.dotGeo.setDrawRange(0, nd);
   }
 }
 
@@ -4326,7 +4302,7 @@ document.getElementById('probes-btn').addEventListener('click', () => {
     pr.mesh.visible      = launched && (viewMode === 'solar') && probesOn;
     pr.glowPt.visible    = launched && (viewMode === 'solar') && !realSizeMode && probesOn;
     pr.trailLine.visible = launched && (viewMode === 'solar') && orbitsOn && probesOn;
-    pr.dotLine.visible   = launched && (viewMode === 'solar') && orbitsOn && !realSizeMode && probesOn;
+    pr.dotLine.visible   = false;
   }
   for (const c of comets) c.orbitLine.visible = orbitsOn && probesOn && (viewMode === 'solar');
 });
@@ -5743,6 +5719,37 @@ function sampleAnchoredKeplerWorldPoints(bodyId, positionAtTimeFn, startSim, end
   }, startSim, endSim, count);
 }
 
+// Sample a full comet orbit by eccentric anomaly (E ∈ [0, 2π]) anchored at perihelion.
+// Produces uniform spatial coverage along the ellipse — no animated polygon artifact
+// from uniform-time sampling of a highly eccentric orbit.
+function sampleCometOrbitByEA(comet, periodYears, count = ORBIT_LINE_SAMPLES) {
+  const db = comet.dbOrbit;
+  const ecc = db
+    ? THREE.MathUtils.clamp(db.eccentricity, 0, 0.999999)
+    : (comet.orbitEcc || 0);
+
+  let tPeriSim;
+  if (db) {
+    const mmDegPerDay = Number.isFinite(db.meanMotionDegPerDay)
+      ? db.meanMotionDegPerDay
+      : (360 / (periodYears * 365.25));
+    tPeriSim = (db.epochJd - db.meanAnomalyDeg / mmDegPerDay - 2451545.0) / 365.25;
+  } else {
+    // angle0 = M at J2000; perihelion when M = 0
+    tPeriSim = -comet.angle0 * periodYears / (2 * Math.PI);
+  }
+
+  const steps = Math.max(2, count);
+  const points = [];
+  for (let i = 0; i < steps; i++) {
+    const E = (2 * Math.PI * i) / (steps - 1);   // closed loop: E[0]=0, E[last]=2π
+    const M = E - ecc * Math.sin(E);
+    const tSim = tPeriSim + (M / (2 * Math.PI)) * periodYears;
+    points.push(getCometWorldPositionAtTime(comet, tSim, new THREE.Vector3()));
+  }
+  return points;
+}
+
 function getMoonEphemerisLocalPosition(moon, atSim, out = new THREE.Vector3()) {
   const moonBodyId = moon.ephemerisBodyId;
   const parentBodyId = moon.parentPlanet.ephemerisBodyId;
@@ -6041,15 +6048,43 @@ function refreshOrbitLines(mode) {
       ? (comet.dbOrbit.periodDays / 365.25)
       : (comet.orbitalPeriodYears || comet.cd.period);
     const useFullCometOrbit = Number.isFinite(cometPeriodYears) && cometPeriodYears > 0 && cometPeriodYears <= 300;
-    const range = useFullCometOrbit
-      ? { start: simTime, end: simTime + cometPeriodYears }
-      : getOrbitTimeRange(cometPeriodYears, mode);
-    const points = mode === 'ephemeris'
-      ? sampleEphemerisWorldPoints(comet.ephemerisBodyId, cometPeriodYears, range.start, range.end, ORBIT_LINE_SAMPLES, (atSim) => getCometWorldPositionAtTime(comet, atSim, new THREE.Vector3()))
-      : null;
-    const worldPts = points || (comet.dbOrbit
-      ? sampleKeplerWorldPoints((atSim) => getCometWorldPositionAtTime(comet, atSim, new THREE.Vector3()), range.start, range.end)
-      : sampleAnchoredKeplerWorldPoints(comet.ephemerisBodyId, (atSim) => getCometWorldPositionAtTime(comet, atSim, new THREE.Vector3()), range.start, range.end));
+
+    let worldPts;
+    if (useFullCometOrbit) {
+      if (mode === 'ephemeris') {
+        // Compute perihelion time nearest to simTime for a stable, non-animated range.
+        const db = comet.dbOrbit;
+        let tPeriSim;
+        if (db) {
+          const mmDegPerDay = Number.isFinite(db.meanMotionDegPerDay)
+            ? db.meanMotionDegPerDay
+            : (360 / (cometPeriodYears * 365.25));
+          tPeriSim = (db.epochJd - db.meanAnomalyDeg / mmDegPerDay - 2451545.0) / 365.25;
+        } else {
+          tPeriSim = -comet.angle0 * cometPeriodYears / (2 * Math.PI);
+        }
+        const nOrbits = Math.round((simTime - tPeriSim) / cometPeriodYears);
+        const periStart = tPeriSim + nOrbits * cometPeriodYears;
+        worldPts = sampleEphemerisWorldPoints(
+          comet.ephemerisBodyId, cometPeriodYears,
+          periStart, periStart + cometPeriodYears,
+          ORBIT_LINE_SAMPLES,
+          (atSim) => getCometWorldPositionAtTime(comet, atSim, new THREE.Vector3())
+        );
+      }
+      // Kepler fallback (or kepler mode): sample by eccentric anomaly — fixes both the
+      // animation (no simTime dependency) and the polygon appearance (uniform spatial coverage).
+      if (!worldPts) worldPts = sampleCometOrbitByEA(comet, cometPeriodYears);
+    } else {
+      // Long-period comet: show partial arc around current time.
+      const range = getOrbitTimeRange(cometPeriodYears, mode);
+      const points = mode === 'ephemeris'
+        ? sampleEphemerisWorldPoints(comet.ephemerisBodyId, cometPeriodYears, range.start, range.end, ORBIT_LINE_SAMPLES, (atSim) => getCometWorldPositionAtTime(comet, atSim, new THREE.Vector3()))
+        : null;
+      worldPts = points || (comet.dbOrbit
+        ? sampleKeplerWorldPoints((atSim) => getCometWorldPositionAtTime(comet, atSim, new THREE.Vector3()), range.start, range.end)
+        : sampleAnchoredKeplerWorldPoints(comet.ephemerisBodyId, (atSim) => getCometWorldPositionAtTime(comet, atSim, new THREE.Vector3()), range.start, range.end));
+    }
     const localPts = worldPts?.map((pt) => comet.incGrp.worldToLocal(pt.clone())) ?? null;
     setOrbitLineGeometryFromLocalPoints(comet.orbitLine, localPts);
   }
